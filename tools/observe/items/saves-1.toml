@@ -1,0 +1,37 @@
+id = "saves-1"
+topic = "saves"
+question = """Save and load from the menu and with the keys the manual gives; try \
+while being carried (the truck at the start of m1, a VTOL departure, a VTOL \
+arrival) and once in normal play; screenshot every message."""
+precision = "exact"
+markset = "saves"
+method = """Show key presses on screen (an OBS key overlay). Save from the in-game menu, \
+then load from it; save with F8 and load with F9 (the manual's "Other \
+Controls"). Do this in four situations, each opened with a situation mark: once \
+in normal play in m1, as the control; during the truck that carries the BFT off \
+the pier at the start of m1; during the VTOL departure at the end of m1, after \
+the BFT has driven into the VTOL; and during the VTOL arrival at the start of \
+m2, before the BFT drives off. Mark every key press, and every menu choice, \
+dialog and message with its exact wording and, if the screen lets you tell, \
+which MSG_* key or dialog.zrd control or dialog it is ("Wording; key: KEY"); \
+where you cannot tell, add what it says in your own words ("Wording; desc: …"). \
+The marks save a frame grab. Mark the first frame after a load, and any attempt \
+that did nothing. To find a key, match the wording against the extracted message \
+table (docs/data/messages.md) and the dialog's controls (docs/data/menus.md). \
+One run in each situation, as for every exact item; record another only if two \
+runs disagree."""
+notes = """The entry shows each message, menu item and dialog by its key, or by \
+our description where there is none; it quotes no wording, which stays in the \
+marks file (docs/CONVENTIONS.md, the copyright rule)."""
+recordings = []
+
+[[analysis]]
+name = "what happens"
+type = "order"
+group = "situation"
+
+[[analysis]]
+name = "messages"
+type = "count"
+labels = ["message", "nothing"]
+group = "situation"

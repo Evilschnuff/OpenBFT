@@ -1,0 +1,29 @@
+id = "canisters-2"
+topic = "canisters"
+question = """Collect canisters past the manual's limit: does the extra one stay on \
+the ground?"""
+precision = "exact"
+markset = "canister-collect"
+method = """The manual (p. 40) says the BFT holds as many as 3. In m1, hold that many, then \
+drive over another Nano-Canister, slowly and then at speed; drive back over it \
+once more. Read the HUD's slots before and after each touch. Mark each touch, \
+whether the canister is taken or stays, the slots, and any message. m1's Nano- \
+Canister is the golden one at the fuel station (remembered from play): confirm \
+on the recording that it is one, by a canister slot on the HUD filling as it is \
+taken. If it is not, use a mission whose puppies.zrd places a NANO-CANISTER \
+(READER-SCHEMA §3.5) and say which in the session's setup notes. This item needs \
+one more canister than the limit: if m1 does not offer that many, use a mission \
+whose puppies.zrd places enough. One run, as for every exact item; record \
+another only if two runs disagree."""
+notes = ""
+recordings = []
+
+[[analysis]]
+name = "extra canister"
+type = "count"
+labels = ["taken", "stays"]
+
+[[analysis]]
+name = "what happens"
+type = "order"
+labels = ["touch", "taken", "stays", "slots", "message"]

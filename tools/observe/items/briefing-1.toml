@@ -1,0 +1,44 @@
+id = "briefing-1"
+topic = "briefing"
+question = """Record a briefing from its first frame: what the transport bar does, \
+how long it takes, when PROCEED appears, what a key press does before and after."""
+precision = "exact, durations approximate"
+markset = "briefing"
+method = """Show key presses on screen (an OBS key overlay) so each press has a frame. Start \
+recording on the menu before m1's briefing. Three runs, as the durations are \
+approximate. Run 1: touch nothing until PROCEED has shown for ten seconds, then \
+press Enter. Run 2: press a key while the transport bar is still moving, then \
+again after PROCEED. Run 3: as run 2 with a mouse click."""
+notes = """The voice-over (sounds.zrd set BRIEFING1) can be added as an [[audio]] \
+event once its file is named, to compare its length with the bar's; that needs \
+the recording's audio − video offset."""
+recordings = []
+
+[[analysis]]
+name = "what happens"
+type = "order"
+group = "start"
+
+[[analysis]]
+name = "start to PROCEED"
+type = "duration"
+from = "start"
+to = "proceed"
+
+[[analysis]]
+name = "transport bar"
+type = "duration"
+from = "bar-moves"
+to = "bar-done"
+
+[[analysis]]
+name = "key to response"
+type = "duration"
+from = "key"
+to = "response"
+
+[[analysis]]
+name = "start to mission"
+type = "duration"
+from = "start"
+to = "mission"

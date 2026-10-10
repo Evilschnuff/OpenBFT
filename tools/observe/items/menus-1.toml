@@ -1,0 +1,33 @@
+id = "menus-1"
+topic = "menus"
+question = """Mission ends and transitions: is the picture blurred, and how? Does the \
+MAINMENU3 layout (dialog.zrd) ever appear, e.g. after a lost mission?"""
+precision = "exact"
+markset = "transitions"
+method = """In m1, record from the last seconds of play to the first menu or screen after \
+it, for: the mission won (its end leads into the VTOL departure), the mission \
+lost by the BFT's destruction, the mission quit from the in-game menu, and the \
+in-game menu opened and closed again. Mark each transition, whether the picture \
+behind it is blurred and how (the marks save a frame grab), and which menu \
+follows: MAINMENU3 is the one with Load, New and Quit alone over the new game \
+art. One run of each, as for every exact item; record another only if two runs \
+disagree."""
+notes = ""
+recordings = []
+
+[[analysis]]
+name = "blur"
+type = "count"
+labels = ["blurred", "sharp"]
+group = "transition"
+
+[[analysis]]
+name = "MAINMENU3"
+type = "count"
+labels = ["mainmenu3", "other-menu"]
+group = "transition"
+
+[[analysis]]
+name = "what happens"
+type = "order"
+group = "transition"

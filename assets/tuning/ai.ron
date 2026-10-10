@@ -1,0 +1,76 @@
+// Overrides for the AI, on top of ai.zrd, aiv*.zrd and net_NN.zrd.
+// **Empty is correct**: the game's own reader data is primary (DESIGN §5.3).
+//
+// The split this file draws: the game states
+// every parameter of *what* its AI does and all of it is read:
+//
+//   activate_rad, attack_rad, attack_dwell, not_pursuit_dwell,
+//   pursuit_params/pursuit_range, return_range, hide_times, attack_strategy,
+//   activate_buddy, path_width and the waypoint graph   (net_NN.zrd)
+//   HEALTH, PARTS, WEAPON/{NAME,AMMO,FIRE_RATE,FIRE_LIMITS,DETECTION_RANGE,
+//   BASE_MOVES,FIRE_DWELL,DAMAGE_MODIFIER}, LOS, MSL_LOCK, TARGETS,
+//   DESTROY_ANIM, DEACTIVATE, EFFECT                    (ai.zrd)
+//   activation, pursuit_range, not_pursuit_dwell, return_range, the weapon
+//   row's engagement range                              (vehicle.zrd)
+//
+// None of those belongs here. What belongs here is what *our* steering
+// invented, because the original has no equivalent: how often a brain
+// re-perceives, how far it leads, how badly it aims, how far its whiskers
+// reach. Each is marked `// approximation` at its definition in
+// crates/bft-sim/src/ai/tuning.rs, and each is settable here:
+//
+//   (
+//       reaction_ticks: Some(6),   // ticks between perception passes
+//       lead_factor:    Some(0.85),// 1.0 is a perfect interception solution
+//       aim_error_deg:  Some(2.0), // max angular error, not a std deviation
+//       steering: Some((
+//           los_lost_ticks:    Some(3),     // passes of no LOS before the
+//                                           // target is dropped; the
+//                                           // *seconds* are the data's
+//                                           // not_pursuit_dwell
+//           arrive_radius:     Some(10.0),  // m; from path_width
+//           whisker_length:    Some(18.0),  // m
+//           whisker_angle_deg: Some(35.0),
+//           whisker_height:    Some(1.0),   // m above the hull origin
+//           steer_gain:        Some(4.0),
+//           strafe_period:     Some(3.0),   // s per back_forth leg
+//           fire_cone_deg:     Some(8.0),   // must exceed aim_error_deg
+//           turret_yaw_rate:   Some(1.6),   // rad/s, ai.zrd turrets
+//           turret_pitch_rate: Some(1.0),
+//           reverse_angle_deg: Some(110.0), // past this the goal is behind
+//           reverse_max_distance: Some(25.0), // m; nearer, back up to it;
+//                                           // further, turn round forwards
+//           min_engage_speed:  Some(0.15),  // throttle floor
+//           activation_scale:  Some(1.0),   // factor on every net's
+//                                           // activate_rad
+//           roam_range:        Some(400.0), // m; a sleeping unit walks its
+//                                           // net while the player is this
+//                                           // near, without hunting; 0 parks
+//       )),
+//       // Per vehicle.zrd kind. Layered over the values above.
+//       by_kind: {
+//           "dron": (lead_factor: Some(1.0), no_whiskers: Some(true)),
+//       },
+//   )
+//
+// The two maps below are an **escape hatch, not a tuning surface**. One
+// hand-authored net out of 470, or one ai.zrd entry out of 130, may turn out
+// wrong in play; correcting it here beats editing game data we do not ship.
+// One file serves all 13 levels, so a net or glob the current mission does
+// not have is warned about and the game keeps playing.
+//
+//   nets:    { 1: (activate_rad: Some(50.0), pursuit: Some((10.0, 20.0))) },
+//   turrets: { "tur_1**": (health: Some(99.0), fire_interval: Some(0.5)) },
+//
+// An unknown field is a parse error, not a silent no-op, so a typo is
+// reported rather than ignored.
+//
+// The dev panel's "AI tuning" tab edits the mission-wide knobs live and
+// saves them here: only values that differ from the compiled defaults are
+// written, and this header and the sections below are kept. When a value
+// changes, note why in this header.
+(
+    by_kind: {},
+    nets: {},
+    turrets: {},
+)

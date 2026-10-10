@@ -1,0 +1,96 @@
+// Overrides for vehicle handling and the player constants, on top of
+// vehicle{,_easy,_hard}.zrd and player.zrd. **Empty is a valid file**: the game's
+// own reader data is primary (DESIGN §5.3) and every leaf here is optional.
+//
+// The shape mirrors the resolved table:
+//
+//   (
+//       kinds: {
+//           "bft": (                       // a vehicle.zrd key
+//               health: Some(140.0),
+//               // Turret traverse and elevation, rad/s. No reader field
+//               // states these: vehicle.zrd gives the *hull*'s `turns` and
+//               // nothing says how fast a barrel moves. The turret slews to
+//               // the cursor's world point at this rate, so it is what
+//               // stops a flick of the mouse teleporting the gun.
+//               turret_rate: Some((2.5, 1.5)),
+//               modes: {
+//                   "track": (             // a vehicle.zrd mode key
+//                       // Reader values, overridden:
+//                       rates: Some((48.0, 65.0)),
+//                       turns: Some((2.5, 3.5)),
+//                       friction: Some((150.0, 80.0, 0.02)),
+//                       // Derived constants, the ones marked
+//                       // `// approximation` in bft-sim/src/vehicle/tuning.rs:
+//                       max_speed: Some(48.0),
+//                       engine_force: Some(52800.0),
+//                       lateral_grip: Some(8.0),
+//                       air_control: Some(0.25),
+//                       grip_force_scale: Some(6.0),  // when skids start
+//                       regrip_fraction: Some(0.5),   // when they end
+//                       stationary_speed: Some(2.0),  // turns[0] below this
+//                       upright_rate_air: Some(4.0),    // rad/s back to level
+//                       upright_rate_ground: Some(2.0), // toward the ground
+//                       max_tilt: Some(1.047),          // radians, 60°
+//                       suspension: Some((
+//                           rest: Some(1.0),
+//                           stiffness: Some(36666.0),
+//                           damping: Some(6350.0),
+//                           max_len: Some(2.2),
+//                       )),
+//                   ),
+//               },
+//           ),
+//       },
+//       player: Some((gravity: Some(40.0))),
+//   )
+//
+// Two things to know before editing:
+//
+//  1. **Overrides are applied after the derivation**, so setting `rates`
+//     does *not* change `max_speed` — set `max_speed` for that. The
+//     derivation's job is to give every one of the 27 mode blocks a working
+//     controller without a line in this file; this file's job is to correct
+//     it where driving says it is wrong.
+//  2. An unknown field is a parse error, not a silent no-op, so a typo is
+//     reported rather than ignored.
+//
+// Tuning the skid. Traction has two coefficients, as real traction does:
+//
+//   static_grip   what the tracks hold before breaking loose (friction[0])
+//   lateral_grip  what they hold while sliding                (friction[1])
+//
+// A full-rate turn needs `speed × turns[1]` of lateral acceleration and a
+// form supplies `grip × 6`, so it breaks away above
+//
+//     speed = static_grip × 6 / turns[1]
+//
+// which with the shipped values is 26 m/s for tracks (against a 48 m/s top
+// speed), 16 for hover (against 20), and above top speed for amphib and sub,
+// which therefore never slide.
+//
+// Once loose it stays loose until the slide decays to half the speed that
+// broke it — that gap is what makes a skid commit instead of catching itself
+// every tick. Widen the gap between the two coefficients for a looser, more
+// committed slide; narrow it for something that recovers quickly. Raising
+// `static_grip` past `turns[1] × top_speed / 6` stops the form sliding at
+// all.
+//
+// The dev inspector (F1, `--dev` or a debug build) has a Vehicle tab that
+// edits all of this live and writes it back here with "Save to vehicle.ron",
+// keeping this header.
+//
+// Every correction below was made by driving; note why in this header.
+// First gameplay feel pass on turret responsiveness and engine force using debug UI.
+(
+    kinds: {
+        "bft": (
+            turret_rate: Some((7.0, 1.5)),
+            modes: {
+                "track": (
+                    engine_force: Some(84500.0),
+                ),
+            },
+        ),
+    },
+)

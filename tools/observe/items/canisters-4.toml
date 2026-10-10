@@ -1,0 +1,20 @@
+id = "canisters-4"
+topic = "canisters"
+question = """Do canisters carry over to the next mission?"""
+precision = "exact"
+markset = "canister-collect"
+method = """Finish m1 holding the Nano-Canister, reading the HUD's slots just before the \
+end, and play into m2 until the HUD is shown. Mark the slots before the end, the \
+end, m2's first frame of play and the slots there. m1's Nano-Canister is the \
+golden one at the fuel station (remembered from play): confirm on the recording \
+that it is one, by a canister slot on the HUD filling as it is taken. If it is \
+not, use a mission whose puppies.zrd places a NANO-CANISTER (READER-SCHEMA §3.5) \
+and say which in the session's setup notes. One run, as for every exact item; \
+record another only if two runs disagree."""
+notes = ""
+recordings = []
+
+[[analysis]]
+name = "slots across missions"
+type = "order"
+labels = ["slots", "mission-end", "mission-start"]

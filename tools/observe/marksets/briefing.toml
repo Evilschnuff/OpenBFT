@@ -1,0 +1,52 @@
+name = "briefing"
+description = "A briefing from its first frame: the transport bar, PROCEED and key presses."
+
+[[key]]
+key = "s"
+label = "start"
+help = "the first frame of the briefing screen (starts a group)"
+
+[[key]]
+key = "b"
+label = "bar-moves"
+help = "the transport bar first changes"
+
+[[key]]
+key = "g"
+label = "bar-stage"
+help = "the transport bar reaches a new stage (note: what changed)"
+note = true
+
+[[key]]
+key = "e"
+label = "bar-done"
+help = "the transport bar stops changing"
+
+[[key]]
+key = "p"
+label = "proceed"
+help = "PROCEED is first visible"
+grab = true
+
+[[key]]
+key = "k"
+label = "key"
+help = "a key goes down (on the key overlay; note: which key)"
+note = true
+
+[[key]]
+key = "r"
+label = "response"
+help = "the first frame the screen responds to the key (note: what it does)"
+note = true
+
+[[key]]
+key = "z"
+label = "no-response"
+help = "the key did nothing visible (note: what was watched)"
+note = true
+
+[[key]]
+key = "m"
+label = "mission"
+help = "the first frame of the mission itself"

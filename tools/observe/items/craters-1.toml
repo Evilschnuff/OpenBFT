@@ -1,0 +1,27 @@
+id = "craters-1"
+topic = "craters"
+question = """Make a crater with the mortar and drive into it: does the BFT sink below \
+the ground around it?"""
+precision = "exact"
+markset = "crater-drive"
+method = """In m1, on open sand or dirt, fire the mortar at the ground a short way ahead, \
+then drive slowly straight into the crater and out the far side, with the camera \
+low behind the BFT so the ground line beside the hull stays in view. Mark the \
+crater, the entry, whether the BFT sits below or level with the ground around \
+it, and the exit. One run, as for every exact item; record another only if two \
+runs disagree."""
+notes = ""
+# Fill in once recorded, e.g. [{ session = "2026-10-07-a", file = "craters-1.mkv" }]
+recordings = []
+
+[[analysis]]
+name = "sinks"
+type = "count"
+labels = ["below", "level"]
+group = "crater"
+
+[[analysis]]
+name = "what happened"
+type = "order"
+labels = ["enter", "below", "level", "exit"]
+group = "crater"

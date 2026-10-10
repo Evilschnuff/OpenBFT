@@ -1,0 +1,49 @@
+// Sound choices the game data does not make.
+//
+// Weapon, pickup, engine, skid and anim-event sounds come from the reader
+// (`weapons.zrd`, `pickup.zrd`, `vehicle.zrd`, `anim.zbd`) through
+// `sounds.zrd`'s logical names, and are not listed here. Names below are
+// those same logical `snd_*` names; a bare WAV stem also works. A name
+// neither resolves to is warned about once and stays silent.
+//
+// Every value here equals the code's default.
+(
+    // Destruction. The original plays these from the victim's kill
+    // animation; here one of these is picked at random.
+    destroyed_small: ["snd_expl01", "snd_expl02", "snd_expl03", "snd_expl04"],
+    destroyed_large: ["snd_expl05", "snd_expl06", "snd_expl07", "snd_expl08"],
+    // Collider half-extent in metres from which a destruction is "large".
+    large_radius: 4.0,
+
+    // The transform sound, by the form being changed to. The transition
+    // animations carry no sound events of their own.
+    form_change: {
+        Track: "snd_morphdown",
+        Hover: "snd_morphup",
+        Amphib: "snd_vehamp_morph",
+        Sub: "snd_vehsub_morph",
+    },
+
+    // RANGE (full volume inside the first, silent past the second) for a 3D
+    // sound whose record has none. // approximation
+    default_range: (50.0, 400.0),
+
+    // At most this many sounds at once; extra one-shots are dropped.
+    max_voices: 48,
+    // Ear spacing in metres, for stereo panning.
+    listener_gap: 4.0,
+
+    // Enemy engines are heard within this many metres.
+    engine_range: 250.0,
+    // Engine rate at a standstill; top speed adds the mode's `pitch_scale`.
+    // // approximation
+    engine_idle_pitch: 1.0,
+    // Engine loudness at a standstill, as a fraction of `volume_scale`.
+    // // approximation
+    engine_idle_volume: 0.6,
+
+    // The first of these stems the music folder has loops in the menus; the
+    // rest shuffle in game. `track02` is the CD's first audio track (track
+    // 1 is the data), which the original played in its menus.
+    menu_tracks: ["menu", "track02"],
+)

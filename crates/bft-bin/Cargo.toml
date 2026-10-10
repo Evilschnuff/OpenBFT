@@ -1,0 +1,21 @@
+[package]
+name = "bft-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Thin binary: App::new(), plugin registration, CLI."
+
+[[bin]]
+name = "open-bft"
+path = "src/main.rs"
+
+[dependencies]
+# The presentation side: Bevy's own defaults, spelled out because the
+# workspace entry turns them off for `bft-sim`'s sake.
+bevy = { workspace = true, features = ["2d", "3d", "ui", "audio"] }
+bft-assets = { workspace = true }
+bft-sim = { workspace = true }
+bft-game = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }

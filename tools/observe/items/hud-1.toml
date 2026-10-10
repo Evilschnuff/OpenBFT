@@ -1,0 +1,30 @@
+id = "hud-1"
+topic = "hud"
+question = """The original's options screen: screenshot every HUD-related option and \
+its wording."""
+precision = "exact"
+markset = "options"
+method = """Open every options screen reachable from the main menu and from the in-game menu \
+of m1. On each, hold still until the screen is fully drawn, then step through \
+every option that could concern the HUD (when in doubt, include it) and cycle \
+each through all of its values, pausing on each. Mark the screen, each option \
+and each value with its exact wording and, if the screen lets you tell, which \
+dialog.zrd control or MSG_* key it is ("Wording; key: KEY"); where you cannot \
+tell, add what it is in your own words ("Wording; desc: …"). The marks save a \
+frame grab of each. To find a key, match the wording against the extracted \
+message table (docs/data/messages.md) and the dialog's controls \
+(docs/data/menus.md). Afterwards change each HUD option in turn and drive for a \
+few seconds in m1 to see its effect. One run, as for every exact item; record \
+another only if two runs disagree."""
+notes = """The question is about the options' wording, so the entry quotes the \
+options' own labels where no key was found (quote = option). Screens and values \
+show their key or our description; the full wording stays in the marks file \
+(docs/CONVENTIONS.md, the copyright rule)."""
+quote = ["option"]
+recordings = []
+
+[[analysis]]
+name = "options and wording"
+type = "order"
+labels = ["screen", "option", "choice", "effect"]
+group = "screen"

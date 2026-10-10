@@ -1,0 +1,52 @@
+name = "crater-size"
+description = "Crater size against a reference of known length, and the wall's slope from a low camera."
+
+[[key]]
+key = "w"
+label = "weapon"
+help = "the next marks belong to this weapon's crater (note: the weapons.zrd name; starts a group)"
+note = true
+
+[[key]]
+key = "a"
+label = "rim-a"
+help = "the rim on one side, across the widest part (point at it)"
+pos = true
+grab = true
+
+[[key]]
+key = "b"
+label = "rim-b"
+help = "the rim opposite rim-a (point at it)"
+pos = true
+
+[[key]]
+key = "r"
+label = "ref-a"
+help = "one end of the reference beside the crater, at the same distance from the camera (point at it)"
+pos = true
+
+[[key]]
+key = "t"
+label = "ref-b"
+help = "the other end of the reference (point at it)"
+pos = true
+
+[[key]]
+key = "u"
+label = "wall-top"
+help = "low camera, wall seen side-on: where the wall meets the rim (point at it)"
+pos = true
+grab = true
+
+[[key]]
+key = "d"
+label = "wall-bottom"
+help = "the same wall where it meets the floor (point at it)"
+pos = true
+
+[[key]]
+key = "n"
+label = "no-crater"
+help = "this weapon left no crater on this ground (note: the ground)"
+note = true

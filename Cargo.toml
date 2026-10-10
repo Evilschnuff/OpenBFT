@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "EUPL-1.2"
+
+# Bevy is pre-1.0 and ships breaking releases every few months; mech3ax output
+# formats are explicitly unstable. Pin exact versions and upgrade deliberately.
+[workspace.dependencies]
+# `default-features = false` here so `bft-sim` can opt out of rendering: a
+# member may add features to a workspace dependency but never remove them.
+# Every consumer names the features it needs; `bft-game` takes the defaults.
+bevy = { version = "=0.19.1", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+thiserror = "=2.0.20"
+
+# Verified on crates.io against Bevy 0.19: avian3d 0.7.0 and bevy_replicon
+# 0.44.1 both declare `bevy ^0.19`; bevy_replicon_renet 0.20.0 is the release
+# that pairs with replicon 0.44 (0.19.0 still wants 0.43); bevy_egui 0.42.0
+# declares the 0.19 subcrates.
+# `default-features = false` for the same reason as `bevy` above: a member may
+# add features to a workspace dependency but never remove them, and `bft-sim`
+# must not get avian's `debug-plugin`, which pulls `bevy_render` in. Consumers
+# name what they need.
+avian3d = { version = "=0.7.0", default-features = false }
+bevy_replicon = "=0.44.1"
+bevy_replicon_renet = "=0.20.0"
+bevy_egui = "=0.42.0"
+
+# ron and rand are already in the tree via Bevy at these versions; matching
+# them keeps one copy of each in the lockfile.
+ron = "=0.12.2"
+rand = "=0.10.2"
+rand_chacha = "=0.10.0"
+
+clap = { version = "=4.6.7", features = ["derive"] }
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+directories = "=6.0.0"
+anyhow = "=1.0.104"
+
+bft-assets = { path = "crates/bft-assets" }
+bft-sim = { path = "crates/bft-sim" }
+bft-game = { path = "crates/bft-game" }
+
+# Dev builds are unusably slow with an unoptimised dependency tree, so optimise
+# dependencies even in debug while keeping our own crates fast to recompile.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

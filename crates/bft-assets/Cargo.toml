@@ -1,0 +1,33 @@
+[package]
+name = "bft-assets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "mech3ax JSON/PNG output -> Bevy assets. Isolated so format churn hits one crate."
+
+[dependencies]
+# `bevy_log` for the `warn!`/`error!` macros DESIGN §9 asks loaders to use;
+# `bevy_image` + `png` so the texture loader can decode a `.tex.zip`'s PNGs
+# into `Image`s. `Image` is an asset, not a renderer: nothing here pulls
+# `bevy_render` or `bevy_pbr` in, so the crate still builds headless.
+bevy = { workspace = true, features = [
+    "bevy_asset",
+    "bevy_image",
+    "bevy_log",
+    "png",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# The cache is read through Bevy's asset server, but the catalog needs to peek
+# inside an extracted reader ZIP to tell a race map from a deathmatch one.
+zip = { workspace = true }
+ron = { workspace = true }
+directories = { workspace = true }
+
+[features]
+# The sound bank's asset types, which need Bevy's audio (and through it an
+# audio backend). Off by default so `bft-sim`, and a dedicated server built
+# from it, never link one; `bft-game` turns it on.
+audio = ["bevy/bevy_audio", "bevy/wav"]

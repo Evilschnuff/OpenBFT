@@ -1,0 +1,26 @@
+name = "crater-shape"
+description = "Looking down into a fresh crater: the rim's corners and the floor's shape."
+
+[[key]]
+key = "c"
+label = "crater"
+help = "a new crater to describe (note: the weapon; starts a group)"
+note = true
+
+[[key]]
+key = "v"
+label = "corner"
+help = "one corner of the rim's outline: point at it, once per corner, going round"
+pos = true
+
+[[key]]
+key = "f"
+label = "floor-flat"
+help = "the floor is a flat face"
+grab = true
+
+[[key]]
+key = "w"
+label = "floor-bowl"
+help = "the floor is a bowl (no flat face)"
+grab = true

@@ -1,0 +1,28 @@
+name = "crater-drive"
+description = "Driving into a fresh crater: does the BFT sink below the ground around it?"
+
+[[key]]
+key = "c"
+label = "crater"
+help = "a new crater: the first frame it shows (starts a group)"
+
+[[key]]
+key = "e"
+label = "enter"
+help = "the BFT's hull first crosses the rim"
+
+[[key]]
+key = "b"
+label = "below"
+help = "the BFT sits visibly lower than the ground around the crater (note: how far, e.g. tracks hidden)"
+note = true
+
+[[key]]
+key = "l"
+label = "level"
+help = "the BFT stays at the height of the ground around it while over the crater"
+
+[[key]]
+key = "x"
+label = "exit"
+help = "the BFT's hull has left the crater"

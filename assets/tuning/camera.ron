@@ -1,0 +1,92 @@
+#![enable(implicit_some)]
+// Chase camera overrides, on top of vehicle.zrd `camback` and player.zrd's
+// camera constants. **Empty is correct**: the game's own values are primary
+// (DESIGN §5.3) and every leaf here is optional.
+//
+// What the data already supplies, and what each field here replaces:
+//
+//   distance          vehicle.zrd `camback[mode].z`  (player: 12.75 m)
+//   height            vehicle.zrd `camback[mode].y`  (player: 4 m)
+//   look_height       vehicle.zrd `aimy[0]`          (player: 3 m)
+//   follow_stiffness  player.zrd  `camera_elastic`   (0.04) — see below
+//
+// And what it does not, so these have no primary source and are ours:
+//
+//   edge_scroll_rate  how fast the cursor at the window edge turns the view
+//   pitch_limit       how far the view may be angled above or below the hull
+//   dead_zone_scale   multiplies the dead zone the reader values give
+//   ease_band         how far past the zone the follow reaches full rate
+//   fov_deg           vertical field of view
+//   sub_distance      how far back the camera sits underwater, where the
+//                     one `camback` per vehicle reads as too close
+//   collision_radius  the sphere swept from the turret to the camera; a wall
+//                     in its way draws the camera in in front of it (0.4 m)
+//   arm_recovery_rate how fast a camera a wall drew in moves back out (10 m/s)
+//   guided            the view from a tether-guided missile: `back` (0 m
+//                     behind the tail end of the model; negative is forward
+//                     along it) and `up` (0.4 m above its top) place the
+//                     camera over it, so the missile runs forward from the
+//                     bottom of the frame with its exhaust out of view; `missile_alpha`
+//                     (0.5) is how solid the missile is drawn, `filter` the
+//                     green wash over the view as sRGB + opacity, and
+//                     `dead_zone` (0.04) the fraction of the half-window at
+//                     the centre that steers nothing
+//
+// The camera's dead zone, yaw rate limit and tether angle are read straight
+// from player.zrd (`camera_zone`, `max_cam_yaw_rate`, `max_cam_tether_angle`)
+// and are deliberately not overridable here: they are the behaviour the
+// original describes, not a guess of ours.
+//
+// On `follow_stiffness`. It is **unread**. As a spring on the camera's
+// position it would stretch the distance to the tank as the hull
+// accelerated away and compress it when it stopped — the camera would
+// breathe along its own view axis. The camera is placed rigidly instead, at
+// exactly `distance` from the hull, and all of its give is in the yaw. The
+// field stays because `camera_elastic` is real reader data.
+//
+// On `dead_zone_scale` and `ease_band`. The reader's `camera_zone` (0.7) and
+// `max_cam_tether_angle` (20°) give a 14° dead zone, but they were sized for
+// a camera chasing the *turret*. Tethered to the hull, with the camera's
+// distance rigid, 14° has the view following every small correction — hence
+// the 2.0 default, so only a real turn moves it.
+//
+// `ease_band` exists because the original's follow switches on hard: still
+// inside the zone, full `max_cam_yaw_rate` a millirad outside it. With the
+// camera placed rigidly, nothing smooths that over, so the follow eases
+// itself in over the first 0.35 rad past the zone. Set it to 0 for the
+// original's hard switch.
+//
+// On `edge_scroll_rate`. It is *not* `max_cam_yaw_rate`. That constant
+// limits how fast the camera's own follow chases the hull; a deliberate
+// scroll is fighting something else entirely — the hull's turn rate,
+// `turns[1]`, which is 3.5 rad/s on tracks at speed. Set below that and the
+// view cannot hold a heading through a full-speed turn, which reads as the
+// mouse having no authority. The default is 4.0, just over the hull, so the
+// player always wins.
+//
+// An unknown field is a parse error, not a silent no-op. A parse error drops
+// the whole file back to the defaults, so check the log after an edit.
+//
+// `implicit_some` (first line) lets a value be written bare — `back: 1.5` —
+// as well as `Some(1.5)`.
+(
+    distance: None,
+    height: None,
+    look_height: None,
+    edge_scroll_rate: None,
+    pitch_limit: None,
+    dead_zone_scale: None,
+    ease_band: None,
+    follow_stiffness: None,
+    fov_deg: None,
+    sub_distance: None,
+    collision_radius: None,
+    arm_recovery_rate: None,
+    guided: (
+        back: None,
+        up: None,
+        missile_alpha: None,
+        filter: None,
+        dead_zone: None,
+    ),
+)

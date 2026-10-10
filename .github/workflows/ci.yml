@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail on warnings everywhere, so `-D warnings` is not only a clippy rule.
+  RUSTFLAGS: -D warnings
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The check that matters most: bft-sim must keep building
+  # without bevy_render, bevy_winit, bevy_audio or bevy_ui, so a dedicated
+  # server needs neither a GPU nor a window. Ubuntu only, and deliberately
+  # without the audio/udev packages the other jobs install — if bft-sim ever
+  # pulls in a rendering feature, this job is where it shows up.
+  headless-sim:
+    name: headless sim
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98.1"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: headless-sim
+      - run: cargo check -p bft-sim --locked
+
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98.1"
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  check:
+    name: clippy and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      # Bevy's Linux build needs ALSA and udev headers. macOS needs nothing
+      # beyond the Xcode tools the runner already has. Windows is not in CI.
+      - name: Install Bevy's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libasound2-dev libudev-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98.1"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # No game data on the runners, so data-backed tests skip themselves:
+      # BFT_DATA_DIR is deliberately left unset.
+      - run: cargo test --workspace --locked

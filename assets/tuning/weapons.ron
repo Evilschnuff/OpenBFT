@@ -1,0 +1,5 @@
+// Overrides for the 19 weapons, on top of weapons.zrd's BALLISTICS.
+// Empty = use the game's own values.
+(
+    weapons: {},
+)

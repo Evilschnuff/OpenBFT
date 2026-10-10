@@ -1,0 +1,9 @@
+// Pieces of level geometry that take craters although the level data does
+// not flag them `can_modify`, per level. Empty = the data's own rule.
+(
+    extra_ground: {
+        // The sand road off the pier: sand-road texture, lying on the
+        // deformable sand `g32`, but unflagged.
+        "m1": ["g943"],
+    },
+)

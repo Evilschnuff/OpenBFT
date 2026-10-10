@@ -1,0 +1,44 @@
+name = "canister-collect"
+description = "Collecting Nano-Canisters past the limit, and carrying them into the next mission."
+
+[[key]]
+key = "c"
+label = "touch"
+help = "the BFT touches a canister on the ground (note: slots filled before)"
+note = true
+
+[[key]]
+key = "t"
+label = "taken"
+help = "the canister disappears from the ground"
+
+[[key]]
+key = "s"
+label = "stays"
+help = "the canister is still on the ground after the BFT has driven over it"
+grab = true
+
+[[key]]
+key = "n"
+label = "slots"
+help = "the HUD's canister slots, read (note: how many filled)"
+note = true
+grab = true
+
+[[key]]
+key = "g"
+label = "message"
+help = "a message appears (note: its wording, exactly)"
+note = true
+grab = true
+
+[[key]]
+key = "m"
+label = "mission-start"
+help = "the first frame of play in a mission (note: which mission; starts a group)"
+note = true
+
+[[key]]
+key = "x"
+label = "mission-end"
+help = "the mission ends (the last frame of play)"

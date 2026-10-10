@@ -1,0 +1,46 @@
+id = "canisters-3"
+topic = "canisters"
+question = """A large hit that empties the meter: is the new health dented at once?"""
+precision = "approximate, hard"
+markset = "canister-use"
+method = """In m1, collect the Nano-Canister with the meter nearly full and save; each run \
+loads that save. Take one hit large enough to empty the meter at once (a mine or \
+a heavy weapon at close range). Step frame by frame through the hit: mark the \
+hit, the empty meter if it shows, the canister slot changing, the meter's edge \
+on the first frame after the canister acts, and again once it has settled, each \
+against the meter's two ends. A run in which the BFT is destroyed is marked as \
+such. m1's Nano-Canister is the golden one at the fuel station (remembered from \
+play): confirm on the recording that it is one, by a canister slot on the HUD \
+filling as it is taken. If it is not, use a mission whose puppies.zrd places a \
+NANO-CANISTER (READER-SCHEMA §3.5) and say which in the session's setup notes. \
+Three runs, as for every approximate item."""
+notes = """Hard: the hit and the canister may fall within one game frame, and the \
+meter may move while it settles."""
+recordings = []
+
+[[analysis]]
+name = "health at once"
+type = "ratio"
+numerator = { distance = ["meter-start", "meter-first"] }
+denominator = { distance = ["meter-start", "meter-end"] }
+unit = "of a full meter"
+group = "trial"
+
+[[analysis]]
+name = "health settled"
+type = "ratio"
+numerator = { distance = ["meter-start", "meter-level"] }
+denominator = { distance = ["meter-start", "meter-end"] }
+unit = "of a full meter"
+group = "trial"
+
+[[analysis]]
+name = "hit to canister"
+type = "duration"
+from = "hit"
+to = "canister-gone"
+
+[[analysis]]
+name = "what happens"
+type = "order"
+group = "trial"

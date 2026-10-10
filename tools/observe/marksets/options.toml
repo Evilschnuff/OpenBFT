@@ -1,0 +1,37 @@
+name = "options"
+description = "Every HUD-related option on the original's options screens, with its wording."
+
+# Notes on the wording keys: "Wording; key: KEY" or "Wording; desc: our words".
+# The wording stays in the marks file; an entry shows the key or the
+# description (docs/CONVENTIONS.md, the copyright rule).
+
+[[key]]
+key = "p"
+label = "screen"
+help = "a new options screen or page is fully shown: its title (note: Wording exactly; key: its dialog.zrd dialog if known, else desc: what it is in your own words)"
+note = true
+grab = true
+wording = true
+
+[[key]]
+key = "o"
+label = "option"
+help = "an option, as worded on screen (note: Wording exactly; key: its dialog.zrd control or MSG_* key if known, else desc: what it is in your own words)"
+note = true
+grab = true
+wording = true
+
+[[key]]
+key = "v"
+label = "choice"
+help = "one value the option can take, as worded (note: Wording exactly; key: its dialog.zrd control or MSG_* key if known, else desc: what it is in your own words)"
+note = true
+grab = true
+wording = true
+
+[[key]]
+key = "x"
+label = "effect"
+help = "what changing the option did on the HUD in play (note, in your own words)"
+note = true
+grab = true

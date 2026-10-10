@@ -1,0 +1,37 @@
+id = "canisters-1"
+topic = "canisters"
+question = """Hold a Nano-Canister and take damage until the meter empties: what \
+happens on screen, and what health comes back."""
+precision = "exact"
+markset = "canister-use"
+method = """In m1, collect the Nano-Canister, then take damage in small steps (enemy fire or \
+a weak weapon at close range) until the health meter empties. Keep the HUD's \
+health meter and canister slots in view. Mark each hit, the empty meter, the \
+canister slot changing, anything else that happens on screen, and the meter's \
+settled level against its two ends. m1's Nano-Canister is the golden one at the \
+fuel station (remembered from play): confirm on the recording that it is one, by \
+a canister slot on the HUD filling as it is taken. If it is not, use a mission \
+whose puppies.zrd places a NANO-CANISTER (READER-SCHEMA §3.5) and say which in \
+the session's setup notes. One run, as for every exact item; record another only \
+if two runs disagree."""
+notes = ""
+recordings = []
+
+[[analysis]]
+name = "what happens"
+type = "order"
+group = "trial"
+
+[[analysis]]
+name = "health after"
+type = "ratio"
+numerator = { distance = ["meter-start", "meter-level"] }
+denominator = { distance = ["meter-start", "meter-end"] }
+unit = "of a full meter"
+group = "trial"
+
+[[analysis]]
+name = "empty to canister"
+type = "duration"
+from = "empty"
+to = "canister-gone"

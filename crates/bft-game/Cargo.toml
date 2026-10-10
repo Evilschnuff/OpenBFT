@@ -1,0 +1,41 @@
+[package]
+name = "bft-game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Presentation: level rendering, camera, HUD, menus, audio, dev tools."
+
+[dependencies]
+# The presentation side: Bevy's own defaults, spelled out because the
+# workspace entry turns them off for `bft-sim`'s sake.
+# `wav` for the game's own sound effects (Bevy's `audio` collection brings
+# only Vorbis); `mp3` and `flac` so the user's music directory can hold what a
+# CD ripper typically writes.
+bevy = { workspace = true, features = ["2d", "3d", "ui", "audio", "wav", "mp3", "flac"] }
+# `audio` for the sound bank's asset types, which need `bevy_audio`.
+bft-assets = { workspace = true, features = ["audio"] }
+bft-sim = { workspace = true }
+# For the physics debug overlay only: it queries `Collider`/`ColliderAabb` to
+# draw them. Same feature set as `bft-sim`'s, so the two share one build of
+# avian; **not** `debug-plugin`, which would pull `bevy_render` into `bft-sim`
+# through feature unification and break NFR-4.
+avian3d = { workspace = true, features = ["3d", "f32", "parry-f32"] }
+# The chase camera's override file is RON, like every other `assets/tuning/`
+# file (DESIGN §5.3); `ron` itself only for the tests that parse the shipped
+# one, since `RonAssetLoader` does the loading.
+serde = { workspace = true }
+# Random picks among a weapon's impact sounds, and shuffling the music.
+# Presentation-only randomness, so not the sim's seeded `ChaCha8`.
+rand = { workspace = true }
+ron = { workspace = true }
+# The dev inspector.
+bevy_egui = { workspace = true }
+# `inspect reader` prints an entry as the JSON it is, and its errors are an
+# enum like every loader's.
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The sound-bank test builds its archive the way `unzbd` does.
+zip = { workspace = true }

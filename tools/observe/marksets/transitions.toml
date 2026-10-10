@@ -1,0 +1,34 @@
+name = "transitions"
+description = "Mission ends and transitions: blur, and which menu follows."
+
+[[key]]
+key = "t"
+label = "transition"
+help = "a transition begins (note: what ended it, e.g. won, lost, quit; starts a group)"
+note = true
+
+[[key]]
+key = "u"
+label = "blurred"
+help = "the picture is blurred (note: how: the kind of blur, how strong, still or growing)"
+note = true
+grab = true
+
+[[key]]
+key = "h"
+label = "sharp"
+help = "the picture behind the transition is not blurred"
+grab = true
+
+[[key]]
+key = "m"
+label = "mainmenu3"
+help = "the menu with Load, New and Quit alone over the new game art is shown"
+grab = true
+
+[[key]]
+key = "o"
+label = "other-menu"
+help = "another menu or screen is shown (note: which)"
+note = true
+grab = true

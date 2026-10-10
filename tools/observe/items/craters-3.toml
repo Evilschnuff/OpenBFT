@@ -1,0 +1,44 @@
+id = "craters-3"
+topic = "craters"
+question = """Crater size for each weapon whose weapons.zrd row has CRATER, against \
+its numbers and declient.zrd's RADIUS and DEPTH. Wall slope from a low camera at \
+the rim, against SLOPE."""
+precision = "approximate"
+markset = "crater-size"
+method = """In m1, for each weapon whose weapons.zrd row has CRATER (READER-SCHEMA §2.3), \
+make a crater on open ground and park the BFT (tank form) beside it, side-on to \
+the camera. From the highest camera that shows both, mark the weapon, the rim \
+across the widest part, and the two ends of the BFT's hull as the reference. \
+Then bring the camera as low as it goes at the rim, looking along one wall so it \
+is seen edge-on, and mark where it meets the rim and where it meets the floor. \
+Three runs, as for every approximate item: three craters per weapon. If a weapon \
+makes no crater, mark that with the ground it hit; a weapon m1 does not offer is \
+marked not observable (!) with that reason."""
+notes = """The size is in hull lengths of the tank-form BFT; the spec converts it \
+with the hull length from the model data and compares it with the weapon's CRATER \
+values and declient.zrd's RADIUS and DEPTH. A screen angle is the wall's slope only \
+when the wall is seen edge-on; the slope is approximate for that reason as well."""
+pixel_error = 3.0
+recordings = []
+
+[[analysis]]
+name = "diameter"
+type = "ratio"
+numerator = { distance = ["rim-a", "rim-b"] }
+denominator = { distance = ["ref-a", "ref-b"] }
+unit = "hull lengths"
+group = "weapon"
+
+[[analysis]]
+name = "wall slope"
+type = "ratio"
+numerator = { dy = ["wall-top", "wall-bottom"] }
+denominator = { dx = ["wall-top", "wall-bottom"] }
+as_angle = true
+group = "weapon"
+
+[[analysis]]
+name = "no crater"
+type = "count"
+labels = ["no-crater"]
+group = "weapon"

@@ -1,0 +1,54 @@
+name = "saves"
+description = "Saving and loading from the menu and with the manual's keys, in every situation tried."
+
+# Notes on the wording keys: "Wording; key: KEY" or "Wording; desc: our words".
+# The wording stays in the marks file; an entry shows the key or the
+# description (docs/CONVENTIONS.md, the copyright rule).
+
+[[key]]
+key = "c"
+label = "situation"
+help = "a new situation is tried (note: control, truck, vtol-departure or vtol-arrival; starts a group)"
+note = true
+
+[[key]]
+key = "k"
+label = "key"
+help = "a key goes down (on the key overlay; note: which key)"
+note = true
+
+[[key]]
+key = "u"
+label = "menu-choice"
+help = "a menu item is chosen (note: Wording exactly; key: its dialog.zrd control if known, else desc: what it is in your own words)"
+note = true
+grab = true
+wording = true
+
+[[key]]
+key = "g"
+label = "message"
+help = "a message appears (note: Wording exactly; key: its MSG_* key if known, else desc: what it is in your own words)"
+note = true
+grab = true
+wording = true
+
+[[key]]
+key = "d"
+label = "dialog"
+help = "a save or load dialog is fully shown: its title (note: Wording exactly; key: its dialog.zrd dialog if known, else desc: what it is in your own words)"
+note = true
+grab = true
+wording = true
+
+[[key]]
+key = "l"
+label = "loaded"
+help = "the first frame of play after a load"
+grab = true
+
+[[key]]
+key = "z"
+label = "nothing"
+help = "the attempt did nothing visible (note: what was tried)"
+note = true

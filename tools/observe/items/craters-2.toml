@@ -1,0 +1,26 @@
+id = "craters-2"
+topic = "craters"
+question = """Look down into a fresh crater: the rim's outline (how many sides), and \
+whether the floor is flat or a bowl. Compare with declient.zrd's POINTS."""
+precision = "exact"
+markset = "crater-shape"
+method = """Make a crater on open ground in m1 with the mortar, then park the BFT at the rim \
+and turn the camera to look down into it as steeply as it goes. Step to a frame \
+where the whole rim is in view and point at each corner of the outline once, \
+going round. Mark the floor as flat or a bowl. One run, as for every exact item; \
+record another only if two runs disagree."""
+notes = """POINTS is in declient.zrd's CRATER block (READER-SCHEMA §3.9); the spec \
+compares the counted corners with it. The entry does not copy the data value."""
+recordings = []
+
+[[analysis]]
+name = "rim corners"
+type = "count"
+labels = ["corner"]
+group = "crater"
+
+[[analysis]]
+name = "floor"
+type = "count"
+labels = ["floor-flat", "floor-bowl"]
+group = "crater"

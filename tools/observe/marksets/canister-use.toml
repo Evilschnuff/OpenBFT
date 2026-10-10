@@ -1,0 +1,69 @@
+name = "canister-use"
+description = "A held Nano-Canister dissolving when the health meter empties."
+
+[[key]]
+key = "c"
+label = "trial"
+help = "a new trial begins (note: canisters held, how the BFT is being hurt; starts a group)"
+note = true
+
+[[key]]
+key = "h"
+label = "hit"
+help = "a hit lands on the BFT (the meter first drops)"
+
+[[key]]
+key = "e"
+label = "empty"
+help = "the health meter first shows empty"
+grab = true
+
+[[key]]
+key = "u"
+label = "canister-gone"
+help = "a canister slot on the HUD first changes"
+grab = true
+
+[[key]]
+key = "f"
+label = "effect"
+help = "something else happens on screen (note: what)"
+note = true
+grab = true
+
+[[key]]
+key = "g"
+label = "effect-end"
+help = "that effect has ended"
+
+[[key]]
+key = "0"
+label = "meter-start"
+help = "the empty end of the health meter (point at it)"
+pos = true
+
+[[key]]
+key = "1"
+label = "meter-end"
+help = "the full end of the health meter (point at it)"
+pos = true
+
+[[key]]
+key = "2"
+label = "meter-level"
+help = "the meter's current edge, once it has settled after the canister (point at it)"
+pos = true
+grab = true
+
+[[key]]
+key = "3"
+label = "meter-first"
+help = "the meter's edge on the first frame after the canister acts (point at it)"
+pos = true
+grab = true
+
+[[key]]
+key = "d"
+label = "destroyed"
+help = "the BFT is destroyed instead"
+grab = true

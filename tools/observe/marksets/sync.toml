@@ -1,0 +1,7 @@
+name = "sync"
+description = "Events seen and heard at once, for `probe --sync-ref`: the audio − video offset."
+
+[[key]]
+key = "y"
+label = "sync"
+help = "the first frame the event shows whose sound is the reference, e.g. a shot's muzzle flash"
