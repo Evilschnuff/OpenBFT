@@ -23,15 +23,21 @@
 //! that follows "the" camera (sky dome, LOD, billboards, the listener) keeps
 //! following it; the head is within a metre of it.
 //!
-//! The turret aims where the head looks: a ray from between the eyes,
-//! handed to `bft-game` as the [`ExternalAim`], with a reticle where it
-//! lands. The UI (HUD, menus, dialogs) draws into an image shown on a panel
-//! fixed in front of the seat, which only the eyes see.
+//! The turret aims where the eyes look when the headset tracks them
+//! ([`eyes`]), and where the head points otherwise: a ray from between the
+//! eyes, handed to `bft-game` as the [`ExternalAim`], with a reticle where
+//! it lands. The UI (HUD, menus, dialogs) draws into an image that only the
+//! eyes see: in play the HUD's clusters each on their own tile around the
+//! seat ([`hud`]), and with a menu up the whole image on one panel in front
+//! of it.
 //!
 //! Recoil had no VR, so none of this rests on the original: every placement
 //! here is a presentation choice, and the constants below say which.
 
 #![cfg(not(target_os = "macos"))]
+
+mod eyes;
+mod hud;
 
 use bevy::app::PluginGroupBuilder;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
@@ -49,7 +55,10 @@ use bevy::shader::ShaderRef;
 use bevy::transform::TransformSystems;
 use bevy::window::{PresentMode, PrimaryWindow};
 use bevy_mod_openxr::add_xr_plugins;
+use bevy_mod_openxr::exts::{OxrEnabledExtensions, OxrExtensions};
+use bevy_mod_openxr::init::OxrInitPlugin;
 use bevy_mod_openxr::reference_space::OxrReferenceSpacePlugin;
+use bevy_mod_openxr::spaces::OxrSpaceLocationFlags;
 use bevy_mod_xr::camera::XrCamera;
 use bevy_mod_xr::session::{XrState, XrTrackingRoot};
 use bft_game::UiCamera;
@@ -91,11 +100,20 @@ pub fn with_xr<G: PluginGroup>(defaults: G) -> PluginGroupBuilder {
     if defaults.contains::<PipelinedRenderingPlugin>() {
         defaults = defaults.disable::<PipelinedRenderingPlugin>();
     }
-    add_xr_plugins(defaults).set(OxrReferenceSpacePlugin {
-        // Seated: the origin is where the head was at the last recentre,
-        // not the floor of a room-scale play area.
-        default_primary_ref_space: openxr::ReferenceSpaceType::LOCAL,
-    })
+    // Asked for, not required: the runtime enables what it has, and the
+    // rest is a warning in the log.
+    // Not hand tracking, which the library asks for by default: nothing
+    // here uses it, and SteamVR logs an error for every frame it is asked
+    // for hands it cannot see.
+    let mut exts = OxrExtensions::default();
+    exts.ext_eye_gaze_interaction = true;
+    add_xr_plugins(defaults)
+        .set(OxrInitPlugin { exts, ..default() })
+        .set(OxrReferenceSpacePlugin {
+            // Seated: the origin is where the head was at the last recentre,
+            // not the floor of a room-scale play area.
+            default_primary_ref_space: openxr::ReferenceSpaceType::LOCAL,
+        })
 }
 
 /// The seated VR view: rig, gaze aim, reticle and UI panel.
@@ -116,6 +134,17 @@ impl Plugin for VrPlugin {
             return;
         }
 
+        let eye_gaze = app
+            .world()
+            .get_resource::<OxrEnabledExtensions>()
+            .is_some_and(|exts| exts.ext_eye_gaze_interaction);
+        if eye_gaze {
+            info!("eye tracking: the runtime offers eye gaze");
+            app.add_plugins(eyes::EyeGazePlugin);
+        } else {
+            info!("eye tracking: the runtime offers no eye gaze; aiming with the head");
+        }
+
         embedded_asset!(app, "panel.wgsl");
         app.add_plugins(MaterialPlugin::<PanelMaterial>::default())
             // On the eye cameras from the moment they exist, so no system
@@ -126,6 +155,7 @@ impl Plugin for VrPlugin {
             })
             .init_resource::<ExternalAim>()
             .add_systems(Startup, (spawn_panel, spawn_reticle, uncap_window))
+            .add_plugins(hud::HudTilesPlugin)
             .add_systems(
                 Update,
                 (
@@ -142,17 +172,31 @@ impl Plugin for VrPlugin {
     }
 }
 
-/// An unlit textured quad drawn over everything: the UI panel and the
-/// reticle.
+/// An unlit textured quad drawn over everything: the UI panel, the HUD
+/// tiles and the reticle.
 ///
 /// The depth test is off. The panel hangs two metres out, and the near
 /// chase offsets put the player's own tank closer than that; a panel that
 /// was depth tested would vanish into the hull.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct PanelMaterial {
+pub(crate) struct PanelMaterial {
     #[texture(0)]
     #[sampler(1)]
     texture: Handle<Image>,
+    /// The part of the texture the quad shows, in UV: the corner, then the
+    /// size.
+    #[uniform(2)]
+    pub(crate) uv_rect: Vec4,
+}
+
+impl PanelMaterial {
+    /// Showing all of `texture`.
+    pub(crate) fn whole(texture: Handle<Image>) -> PanelMaterial {
+        PanelMaterial {
+            texture,
+            uv_rect: Vec4::new(0.0, 0.0, 1.0, 1.0),
+        }
+    }
 }
 
 impl Material for PanelMaterial {
@@ -191,9 +235,9 @@ impl Material for PanelMaterial {
 /// The UI panel: its entity, the image the UI draws into and the material
 /// that shows it.
 #[derive(Resource, Debug)]
-struct Panel {
-    entity: Entity,
-    image: Handle<Image>,
+pub(crate) struct Panel {
+    pub(crate) entity: Entity,
+    pub(crate) image: Handle<Image>,
     material: Handle<PanelMaterial>,
 }
 
@@ -202,7 +246,7 @@ struct Panel {
 struct Reticle;
 
 /// Hang the UI panel in front of the seat.
-fn spawn_panel(
+pub(crate) fn spawn_panel(
     mut commands: Commands,
     root: Single<Entity, With<XrTrackingRoot>>,
     mut images: ResMut<Assets<Image>>,
@@ -216,9 +260,7 @@ fn spawn_panel(
         TextureFormat::Bgra8UnormSrgb,
         None,
     ));
-    let material = materials.add(PanelMaterial {
-        texture: image.clone(),
-    });
+    let material = materials.add(PanelMaterial::whole(image.clone()));
     let entity = commands
         .spawn((
             Name::new("VR UI panel"),
@@ -247,9 +289,7 @@ fn spawn_reticle(
         Name::new("VR reticle"),
         Reticle,
         Mesh3d(meshes.add(Rectangle::new(1.0, 1.0))),
-        MeshMaterial3d(materials.add(PanelMaterial {
-            texture: images.add(ring_image()),
-        })),
+        MeshMaterial3d(materials.add(PanelMaterial::whole(images.add(ring_image())))),
         Transform::default(),
         Visibility::Hidden,
         RenderLayers::layer(PANEL_LAYER),
@@ -318,9 +358,15 @@ fn head(eyes: &Query<&GlobalTransform, With<XrCamera>>) -> Option<Transform> {
     })
 }
 
-/// Aim along the gaze.
-fn gaze_aim(eyes: Query<&GlobalTransform, With<XrCamera>>, mut aim: ResMut<ExternalAim>) {
-    aim.0 = head(&eyes).map(|head| Ray3d::new(head.translation, head.forward()));
+/// Aim along the gaze: the eyes' when the runtime locates them, the head's
+/// otherwise.
+fn gaze_aim(
+    eyes: Query<&GlobalTransform, With<XrCamera>>,
+    gazes: Query<(&GlobalTransform, &OxrSpaceLocationFlags), With<eyes::EyeGaze>>,
+    mut aim: ResMut<ExternalAim>,
+) {
+    let gaze = eyes::located_gaze(&gazes).or_else(|| head(&eyes));
+    aim.0 = gaze.map(|gaze| Ray3d::new(gaze.translation, gaze.forward()));
 }
 
 /// Put the reticle on the local player's aim point, facing the head, at a
