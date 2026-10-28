@@ -99,10 +99,18 @@ impl Plugin for GamePlugin {
 
 /// The 2D camera every Bevy UI screen in this crate renders through.
 ///
+/// A plugin that shows the UI somewhere other than the window (a VR panel)
+/// finds it by this and retargets it.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct UiCamera;
+
+/// Spawn the [`UiCamera`].
+///
 /// `order` is below the viewer's 3D camera so the level draws first and the
 /// UI on top of it.
 fn spawn_ui_camera(mut commands: Commands) {
     commands.spawn((
+        UiCamera,
         Camera2d,
         Camera {
             order: 1,

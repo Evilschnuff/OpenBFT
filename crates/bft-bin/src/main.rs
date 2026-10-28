@@ -147,6 +147,11 @@ enum Command {
         /// or `quick` for the quick save (docs/SAVEGAME.md).
         #[arg(long, value_name = "FILE", conflicts_with_all = ["level", "level_flag"])]
         load: Option<PathBuf>,
+        /// Look through a VR headset, over OpenXR. Needs a build with the
+        /// `vr` feature (`cargo run --features vr -- play --vr`); without a
+        /// headset runtime answering, the game runs flat.
+        #[arg(long)]
+        vr: bool,
     },
     /// Open a level in the free-fly viewer.
     View {
@@ -172,6 +177,11 @@ enum Command {
         /// Always on in a debug build.
         #[arg(long)]
         dev: bool,
+        /// Look through a VR headset, over OpenXR. Needs a build with the
+        /// `vr` feature (`cargo run --features vr -- play --vr`); without a
+        /// headset runtime answering, the game runs flat.
+        #[arg(long)]
+        vr: bool,
     },
     /// Run a headless dedicated server.
     Server,
@@ -274,6 +284,7 @@ fn main() -> ExitCode {
         unlock_all: false,
         dev: false,
         load: None,
+        vr: false,
     };
     let result = match cli.command.as_ref().unwrap_or(&play) {
         Command::Play {
@@ -284,6 +295,7 @@ fn main() -> ExitCode {
             unlock_all,
             dev,
             load,
+            vr,
         } => match level
             .as_deref()
             .or(level_flag.as_deref())
@@ -319,6 +331,7 @@ fn main() -> ExitCode {
                     debug_physics: *debug_physics,
                     unlock_all: *unlock_all,
                     dev: *dev,
+                    vr: *vr,
                 },
                 load.as_deref().map(save_path),
             ),
@@ -333,6 +346,7 @@ fn main() -> ExitCode {
             all,
             debug_physics,
             dev,
+            vr,
         } => match level.parse::<LevelId>() {
             Ok(id) => run_client(
                 &cli.paths,
@@ -350,6 +364,7 @@ fn main() -> ExitCode {
                     // unlock.
                     unlock_all: false,
                     dev: *dev,
+                    vr: *vr,
                 },
                 None,
             ),
@@ -547,6 +562,8 @@ struct ClientFlags {
     unlock_all: bool,
     /// Add the dev tools in a release build.
     dev: bool,
+    /// Look through a VR headset.
+    vr: bool,
 }
 
 /// A windowed app: presentation plus the simulation behind it.
@@ -563,7 +580,16 @@ fn run_client(
         debug_physics,
         unlock_all,
         dev,
+        vr,
     } = flags;
+
+    if vr && !VR_BUILT {
+        eprintln!(
+            "open-bft: --vr needs a build with the `vr` feature \
+             (`cargo run --features vr -- play --vr`), on Linux or Windows"
+        );
+        return Err(ExitCode::FAILURE);
+    }
 
     // A windowed run shows its failure in the window as well as on stderr
     // (FR-D1: `cargo run` without data shows the boot failure message on
@@ -630,22 +656,13 @@ fn run_client(
         // Before `DefaultPlugins`: Bevy builds asset sources when
         // `AssetPlugin` is built, so `cache://` has to be registered first.
         .add_plugins(AssetsPlugin::new(paths).with_texture_filter(settings.texture_filter()))
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(window),
-                    ..default()
-                })
-                // An absolute path, because Bevy's default resolves against
-                // `CARGO_MANIFEST_DIR` — `crates/bft-bin`, which holds no
-                // assets — or the executable's directory. Neither finds this
-                // workspace's `assets/`, and the tuning files live there.
-                .set(bevy::asset::AssetPlugin {
-                    file_path: bft_assets::asset_directory().to_string_lossy().into_owned(),
-                    ..default()
-                }),
-        )
+        .add_plugins(default_plugins(window, vr))
         .add_plugins(GamePlugin);
+
+    #[cfg(all(feature = "vr", not(target_os = "macos")))]
+    if vr {
+        app.add_plugins(bft_xr::VrPlugin);
+    }
 
     // The dev tools: in every debug build, and in a release one when asked.
     if dev || cfg!(debug_assertions) {
@@ -655,6 +672,36 @@ fn run_client(
     app.run();
 
     Ok(())
+}
+
+/// Whether this build can look through a headset: the `vr` feature, on a
+/// platform with OpenXR (`bft-xr` is empty on macOS).
+const VR_BUILT: bool = cfg!(all(feature = "vr", not(target_os = "macos")));
+
+/// Bevy's default plugins for a windowed run, with OpenXR rendering in
+/// place of the flat renderer when `vr` asks for it.
+fn default_plugins(window: Window, vr: bool) -> bevy::app::PluginGroupBuilder {
+    let plugins = DefaultPlugins
+        .set(WindowPlugin {
+            primary_window: Some(window),
+            ..default()
+        })
+        // An absolute path, because Bevy's default resolves against
+        // `CARGO_MANIFEST_DIR` — `crates/bft-bin`, which holds no assets —
+        // or the executable's directory. Neither finds this workspace's
+        // `assets/`, and the tuning files live there.
+        .set(bevy::asset::AssetPlugin {
+            file_path: bft_assets::asset_directory().to_string_lossy().into_owned(),
+            ..default()
+        });
+
+    #[cfg(all(feature = "vr", not(target_os = "macos")))]
+    if vr {
+        return bft_xr::with_xr(plugins);
+    }
+    // `run_client` refuses `--vr` without the feature before getting here.
+    let _ = vr;
+    plugins
 }
 
 /// Open a window that says why the engine cannot start (FR-D1).

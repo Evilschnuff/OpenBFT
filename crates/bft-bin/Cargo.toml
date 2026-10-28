@@ -17,5 +17,11 @@ bevy = { workspace = true, features = ["2d", "3d", "ui", "audio"] }
 bft-assets = { workspace = true }
 bft-sim = { workspace = true }
 bft-game = { workspace = true }
+bft-xr = { workspace = true, optional = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+
+[features]
+# VR over OpenXR: `play --vr` and `view --vr`. Off by default, so a shipped
+# build neither compiles nor links any of it.
+vr = ["dep:bft-xr"]

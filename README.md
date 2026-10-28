@@ -40,7 +40,14 @@ cargo run                 # play (the default)
 cargo run -- view m1      # open a level in the free-fly viewer
 cargo run -- server       # headless dedicated server, no window or GPU
 cargo run -- --help       # every subcommand
+cargo run --features vr -- play m1 --vr   # in a VR headset (Linux, OpenXR)
 ```
+
+VR is optional and off by default: without `--features vr` none of it is
+built. It needs an OpenXR runtime (SteamVR, Monado, WiVRn) and the system's
+OpenXR loader under its unversioned name `libopenxr_loader.so`, which on
+Debian/Ubuntu comes from `libopenxr-dev` (`libopenxr-loader1` alone ships only
+`.so.1`); with neither answering, `--vr` runs the flat game.
 
 The first build compiles Bevy's full dependency tree and takes several minutes.
 Later builds are incremental. Dependencies are built optimised even in debug

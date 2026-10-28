@@ -9,6 +9,8 @@ crates/
   bft-assets/   formats → engine types
   bft-sim/      simulation, headless-capable
   bft-game/     presentation
+  bft-xr/       optional VR over OpenXR, layered on bft-game; only bft-bin
+                depends on it, behind its `vr` feature (off by default)
   bft-bin/      binary `open-bft` with clap subcommands
 assets/         own assets only: tuning/*.ron
 docs/
@@ -35,6 +37,8 @@ Verified on crates.io against Bevy 0.19.1; every entry is an `=` pin.
 | bevy_replicon | =0.44.1 | bft-sim, bft-game | declares `bevy ^0.19` |
 | bevy_replicon_renet | =0.20.0 | bft-sim | the release that pairs with replicon 0.44; 0.19.0 still wants 0.43 |
 | bevy_egui | =0.42.0 | bft-game (devtools) | declares the 0.19 subcrates |
+| bevy_mod_openxr, bevy_mod_xr | =0.6.0 | bft-xr | declare `bevy ^0.19` and `wgpu ^29`. Not built on macOS |
+| openxr | =0.21.1 | bft-xr | the version bevy_mod_openxr pulls in; default `loaded` feature opens the system's OpenXR loader at run time, so no SDK is needed to build |
 | clap | =4.6.7, `derive` | bft-bin | latest 4.x; MSRV 1.85 |
 | serde =1.0.229, serde_json =1.0.151, thiserror =2.0.20 | | | |
 | ron | =0.12.2 | bft-assets, bft-sim | already in the lockfile via Bevy, so pinning it keeps one copy |
@@ -64,7 +68,7 @@ must do the same.
 ### Plugin naming
 
 Every crate exposes one top-level plugin: `AssetsPlugin`, `SimPlugin`,
-`GamePlugin`. Sub-plugins are private to the crate unless another crate
+`GamePlugin`, `VrPlugin`. Sub-plugins are private to the crate unless another crate
 needs them. `bft-bin` adds `AssetsPlugin` + `SimPlugin` for `server`, and
 all three for `play`/`view`.
 

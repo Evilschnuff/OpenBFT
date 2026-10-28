@@ -38,6 +38,15 @@ ron = "=0.12.2"
 rand = "=0.10.2"
 rand_chacha = "=0.10.0"
 
+# Optional VR, for `bft-xr` only. 0.6.0 is the release that declares
+# `bevy ^0.19` and `wgpu ^29`, the versions this tree already has; `openxr` is
+# the version it pulls in, named directly for `ReferenceSpaceType`. Its
+# default `loaded` feature opens the system's OpenXR loader at run time, so
+# building needs no OpenXR SDK.
+bevy_mod_openxr = "=0.6.0"
+bevy_mod_xr = "=0.6.0"
+openxr = "=0.21.1"
+
 clap = { version = "=4.6.7", features = ["derive"] }
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 directories = "=6.0.0"
@@ -46,11 +55,21 @@ anyhow = "=1.0.104"
 bft-assets = { path = "crates/bft-assets" }
 bft-sim = { path = "crates/bft-sim" }
 bft-game = { path = "crates/bft-game" }
+bft-xr = { path = "crates/bft-xr" }
 
 # Dev builds are unusably slow with an unoptimised dependency tree, so optimise
 # dependencies even in debug while keeping our own crates fast to recompile.
+#
+# Debug info stays out of the linked binaries. Linux otherwise copies all of
+# it, Bevy's included, into every test binary: over 100 GB of `target/` for
+# one `cargo test --workspace`, and a disk-bound link that stalls the desktop.
+# `unpacked` leaves it in the object files where a debugger still finds it,
+# which is what macOS does by default. Dependencies keep line tables only, so
+# a backtrace through Bevy still has file and line.
 [profile.dev]
 opt-level = 1
+split-debuginfo = "unpacked"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = "line-tables-only"

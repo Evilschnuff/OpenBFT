@@ -1,0 +1,24 @@
+[package]
+name = "bft-xr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Optional VR presentation over OpenXR, layered on bft-game."
+
+[dependencies]
+# Bevy's own defaults, spelled out because the workspace entry turns them off
+# for `bft-sim`'s sake (CONVENTIONS, "bft-sim Bevy feature set"). Not
+# target-gated like the OpenXR crates below: Bevy's derive macros look for
+# `bevy` in this table only.
+bevy = { workspace = true, features = ["2d", "3d", "ui", "audio"] }
+bft-game = { workspace = true }
+# The local player's aim point, for the reticle.
+bft-sim = { workspace = true }
+
+# The crate is empty on macOS, which has no OpenXR runtime (REQUIREMENTS
+# §5.2), so a workspace build there never compiles these.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+bevy_mod_openxr = { workspace = true }
+bevy_mod_xr = { workspace = true }
+openxr = { workspace = true }

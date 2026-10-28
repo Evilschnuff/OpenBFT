@@ -36,15 +36,26 @@ use bft_sim::vehicle::PlayerVehicle;
 
 use super::original::CurrentHudFrame;
 use super::{HudRoot, HudStyle};
+use crate::aim::{ExternalAim, aim_ray};
 use crate::chase_camera::ChaseCamera;
 
 /// The sensor window's camera.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct SensorCamera;
 
+/// A [`Camera3d`] that is not the view the player looks through, added by a
+/// plugin outside this crate: a VR headset's eye cameras, which ride along
+/// with the main view rather than replace it.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct AuxiliaryCamera;
+
 /// A query filter for "the" 3D camera the player looks through: any
-/// [`Camera3d`] but the sensor's.
-pub type MainCamera3d = (With<Camera3d>, Without<SensorCamera>);
+/// [`Camera3d`] but the sensor's and the [`AuxiliaryCamera`]s.
+pub type MainCamera3d = (
+    With<Camera3d>,
+    Without<SensorCamera>,
+    Without<AuxiliaryCamera>,
+);
 
 /// The image the sensor camera draws into, shared with the HUD node that
 /// shows it.
@@ -143,8 +154,8 @@ pub fn create_sensor_image(mut commands: Commands, mut images: ResMut<Assets<Ima
 }
 
 /// Spawn, aim, size and switch the sensor camera.
-// Nine parameters: the two cameras, the HUD's state, the window and the
-// image store.
+// Ten parameters: the two cameras, the HUD's state, the window, the aim and
+// the image store.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn drive_sensor_camera(
     mut commands: Commands,
@@ -152,6 +163,7 @@ pub fn drive_sensor_camera(
     image: Option<Res<SensorImage>>,
     frame: Option<Res<CurrentHudFrame>>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
+    external: Option<Res<ExternalAim>>,
     chase: Query<
         (&Camera, &GlobalTransform, &Projection),
         (With<ChaseCamera>, Without<SensorCamera>),
@@ -189,8 +201,6 @@ pub fn drive_sensor_camera(
     }
 
     let visible = huds.iter().any(|visibility| visibility.get());
-    let cursor = window.as_ref().and_then(|window| window.cursor_position());
-
     let Some((main_camera, eye, main_projection)) = chase.iter().next() else {
         for (entity, ..) in &sensors {
             commands.entity(entity).despawn();
@@ -224,8 +234,12 @@ pub fn drive_sensor_camera(
         }
         // With the pointer out of the window the view holds where it was,
         // as the turret does.
-        if let Some(ray) = cursor.and_then(|cursor| main_camera.viewport_to_world(eye, cursor).ok())
-        {
+        if let Some(ray) = aim_ray(
+            external.as_deref(),
+            window.as_deref().copied(),
+            main_camera,
+            eye,
+        ) {
             *transform = sensor_pose(eye, ray.direction);
         }
 

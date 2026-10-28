@@ -67,9 +67,38 @@ impl Plugin for AimPlugin {
             Update,
             // Not under a menu: a cursor at the window's edge while the pause
             // menu is up must not spin the view behind it.
-            (aim_point, edge_scroll).run_if(crate::ui::gameplay_input_enabled),
+            (
+                aim_point,
+                // A view that owns its aim turns itself.
+                edge_scroll.run_if(not(resource_exists::<ExternalAim>)),
+            )
+                .run_if(crate::ui::gameplay_input_enabled),
         );
     }
+}
+
+/// A ray to aim along instead of the cursor's, kept up to date every frame
+/// by a plugin that owns the view: a VR headset's gaze.
+///
+/// While the resource exists the cursor neither aims nor scrolls the view.
+/// `None` is no ray this frame, which holds the last aim point the way a
+/// cursor outside the window does.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct ExternalAim(pub Option<Ray3d>);
+
+/// The ray the player aims along this frame: the [`ExternalAim`] when there
+/// is one, else the ray from `camera` through the cursor.
+pub fn aim_ray(
+    external: Option<&ExternalAim>,
+    window: Option<&Window>,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+) -> Option<Ray3d> {
+    if let Some(ExternalAim(ray)) = external {
+        return *ray;
+    }
+    let cursor = window?.cursor_position()?;
+    camera.viewport_to_world(camera_transform, cursor).ok()
 }
 
 /// Cast the cursor's ray into the level and record what it points at.
@@ -79,6 +108,7 @@ impl Plugin for AimPlugin {
 /// mouse on a fast display.
 pub fn aim_point(
     guided: Res<GuidedMissile>,
+    external: Option<Res<ExternalAim>>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     spatial: SpatialQuery,
@@ -89,9 +119,6 @@ pub fn aim_point(
     if guided.is_guiding() {
         return;
     }
-    let Some(window) = window else {
-        return;
-    };
     let Ok((camera, camera_transform)) = cameras.single() else {
         return;
     };
@@ -99,10 +126,12 @@ pub fn aim_point(
     // the last aim point standing rather than snapping the turret to a
     // default: a turret that swung to centre every time the mouse left the
     // window would be unusable.
-    let Some(cursor) = window.cursor_position() else {
-        return;
-    };
-    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor) else {
+    let Some(ray) = aim_ray(
+        external.as_deref(),
+        window.as_deref().copied(),
+        camera,
+        camera_transform,
+    ) else {
         return;
     };
 
@@ -237,6 +266,23 @@ fn edge_push(x: f32, width: f32, margin: f32) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An external aim replaces the cursor outright: its ray is used with no
+    /// window at all, and its `None` holds the aim rather than falling back
+    /// to the cursor.
+    #[test]
+    fn an_external_aim_replaces_the_cursor() {
+        let camera = Camera::default();
+        let transform = GlobalTransform::default();
+        let ray = Ray3d::new(Vec3::new(1.0, 2.0, 3.0), Dir3::NEG_Z);
+
+        let aimed = aim_ray(Some(&ExternalAim(Some(ray))), None, &camera, &transform);
+        assert_eq!(aimed.map(|aimed| aimed.origin), Some(ray.origin));
+        assert_eq!(aimed.map(|aimed| aimed.direction), Some(ray.direction));
+
+        let window = Window::default();
+        assert!(aim_ray(Some(&ExternalAim(None)), Some(&window), &camera, &transform).is_none());
+    }
 
     /// The middle of the window does not scroll: most of the screen has to
     /// be free for aiming.
