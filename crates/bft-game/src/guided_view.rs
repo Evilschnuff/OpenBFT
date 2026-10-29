@@ -81,6 +81,14 @@ impl GuidedMissile {
     }
 }
 
+/// How hard to steer a guided missile, −1..1 on each axis (`x` right, `y`
+/// up), kept up to date every frame by a plugin with a stick of its own: a
+/// VR headset's controller.
+///
+/// While the resource exists it steers instead of the cursor.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct ExternalGuide(pub Vec2);
+
 /// A guided missile's mesh drawn translucent, and the material it had.
 #[derive(Component, Debug, Clone)]
 struct Faded(Handle<StandardMaterial>);

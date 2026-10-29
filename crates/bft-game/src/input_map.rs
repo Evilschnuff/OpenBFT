@@ -19,7 +19,7 @@ use bevy::window::PrimaryWindow;
 use bft_sim::vehicle::{Controlled, PlayerInput, VehicleTable};
 
 use crate::chase_camera::ChaseCamera;
-use crate::guided_view::{GUIDED_DEAD_ZONE, GuidedMissile, guide_from_cursor};
+use crate::guided_view::{ExternalGuide, GUIDED_DEAD_ZONE, GuidedMissile, guide_from_cursor};
 use crate::ui::{Action, ActionInput};
 
 /// The input map: reads devices, writes the local vehicle's `PlayerInput`.
@@ -38,11 +38,12 @@ impl Plugin for InputMapPlugin {
 ///
 /// While a tether-guided missile is being flown
 /// ([`GuidedMissile`](crate::guided_view::GuidedMissile)) the controls are
-/// on it: the cursor's offset from the centre steers, the launch key lets
+/// on it: the cursor's offset from the centre steers (or the
+/// [`ExternalGuide`], when a plugin supplies one), the launch key lets
 /// go, and the tank neither drives nor fires. The trigger stays dead after
 /// that until it is released, so the press that let go does not launch the
 /// next missile.
-// Seven parameters, all ECS injections.
+// Nine parameters, all ECS injections.
 #[allow(clippy::too_many_arguments)]
 pub fn read_input(
     actions: ActionInput,
@@ -50,13 +51,17 @@ pub fn read_input(
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     table: Option<Res<VehicleTable>>,
     guided: Res<GuidedMissile>,
+    external_guide: Option<Res<ExternalGuide>>,
     cameras: Query<&ChaseCamera>,
     mut hold_fire: Local<bool>,
     mut inputs: Query<(&mut PlayerInput, &Controlled)>,
 ) {
     // A window that is not focused must not steer: alt-tabbing away with W
-    // held would otherwise drive off a cliff.
+    // held would otherwise drive off a cliff. A plugin pressing actions
+    // itself (a headset's controllers) answers for its own devices, so the
+    // window's focus then only gates the mouse.
     let focused = window.as_ref().is_none_or(|window| window.focused);
+    let listening = focused || actions.has_external();
 
     // The trigger that let a missile go, or launched one, must come up
     // before it fires again.
@@ -68,6 +73,9 @@ pub fn read_input(
     let guide = guided
         .is_guiding()
         .then(|| {
+            if let Some(external) = &external_guide {
+                return Some(external.0.clamp(Vec2::NEG_ONE, Vec2::ONE));
+            }
             let window = window.as_ref()?;
             let cursor = window.cursor_position()?;
             let dead_zone = cameras
@@ -89,7 +97,7 @@ pub fn read_input(
             continue;
         }
 
-        if !focused {
+        if !listening {
             // Release the held states, keep whatever is already latched: a
             // press that happened while focused deserves to be acted on.
             input.throttle = 0.0;
@@ -122,7 +130,9 @@ pub fn read_input(
         input.fire_alt = actions.pressed(Action::AltFire);
 
         // Accumulate rather than assign: several frames may share one tick.
-        input.turret_delta += turret_delta(&motion, sensitivity, invert, table.as_deref());
+        if focused {
+            input.turret_delta += turret_delta(&motion, sensitivity, invert, table.as_deref());
+        }
 
         if actions.just_pressed(Action::NextForm) {
             input.next_form = true;

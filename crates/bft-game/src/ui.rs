@@ -45,7 +45,7 @@ pub mod settings;
 pub mod settings_screen;
 pub mod theme;
 
-pub use bindings::{Action, ActionInput, Binding, InputBindings};
+pub use bindings::{Action, ActionInput, Binding, ExternalActions, InputBindings};
 pub use hud::{HudHealth, HudMap, HudMessages, HudRoot, HudVisible, HudWeapon};
 pub use settings::{
     HudSettings, Settings, SettingsFile, VideoSettings, WindowModeSetting, load_settings,

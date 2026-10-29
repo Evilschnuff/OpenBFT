@@ -377,6 +377,21 @@ impl Devices<'_> {
     }
 }
 
+/// Actions pressed by devices this table does not bind, kept up to date
+/// every frame by the plugin that owns them: a VR headset's controllers.
+///
+/// The owner binds its devices itself, so these are actions, not buttons:
+/// [`ActionInput`] reads them on top of whatever the table's buttons say.
+/// The owner clears the just-pressed state at the start of each frame
+/// ([`ButtonInput::clear`]) before pressing and releasing, in `PreUpdate`
+/// before [`read_input`](crate::input_map::read_input).
+///
+/// While the resource exists the game takes input with its window
+/// unfocused, since the player may be looking through a headset rather than
+/// at the window; the mouse still only turns the turret while focused.
+#[derive(Resource, Debug, Default)]
+pub struct ExternalActions(pub ButtonInput<Action>);
+
 /// Actions as a system parameter: `input.pressed(Action::Fire)`.
 ///
 /// Every device is optional, so a headless test app that never added the
@@ -387,6 +402,7 @@ pub struct ActionInput<'w, 's> {
     mouse: Option<Res<'w, ButtonInput<MouseButton>>>,
     gamepads: Query<'w, 's, &'static Gamepad>,
     bindings: Option<Res<'w, InputBindings>>,
+    external: Option<Res<'w, ExternalActions>>,
 }
 
 impl ActionInput<'_, '_> {
@@ -404,6 +420,10 @@ impl ActionInput<'_, '_> {
         self.bindings
             .as_ref()
             .is_some_and(|bindings| bindings.pressed(action, &self.devices()))
+            || self
+                .external
+                .as_ref()
+                .is_some_and(|external| external.0.pressed(action))
     }
 
     /// Whether the action's button went down this frame.
@@ -411,6 +431,15 @@ impl ActionInput<'_, '_> {
         self.bindings
             .as_ref()
             .is_some_and(|bindings| bindings.just_pressed(action, &self.devices()))
+            || self
+                .external
+                .as_ref()
+                .is_some_and(|external| external.0.just_pressed(action))
+    }
+
+    /// Whether a plugin presses actions too ([`ExternalActions`]).
+    pub fn has_external(&self) -> bool {
+        self.external.is_some()
     }
 
     /// The bindings themselves, when loaded.
@@ -532,6 +561,32 @@ mod tests {
         assert!(bindings.pressed(Action::Forward, &devices));
         assert!(bindings.just_pressed(Action::Forward, &devices));
         assert!(!bindings.pressed(Action::Back, &devices));
+    }
+
+    /// An action a plugin pressed reads as pressed alongside the keys.
+    #[test]
+    fn external_actions_read_on_top_of_the_keys() {
+        let mut world = World::new();
+        world.insert_resource(keys(&[KeyCode::KeyW]));
+        world.insert_resource(InputBindings::default());
+        let mut external = ExternalActions::default();
+        external.0.press(Action::Fire);
+        world.insert_resource(external);
+
+        let read = |world: &mut World, action: Action| {
+            world
+                .run_system_cached_with(
+                    |In(action): In<Action>, actions: ActionInput| {
+                        (actions.pressed(action), actions.just_pressed(action))
+                    },
+                    action,
+                )
+                .unwrap()
+        };
+
+        assert_eq!(read(&mut world, Action::Fire), (true, true));
+        assert_eq!(read(&mut world, Action::Forward), (true, true));
+        assert_eq!(read(&mut world, Action::AltFire), (false, false));
     }
 
     #[test]
