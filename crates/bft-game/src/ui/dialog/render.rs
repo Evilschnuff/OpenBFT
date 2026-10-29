@@ -20,9 +20,9 @@
 //! sense ([`UiButton`]); one it gives none is drawn and inert.
 
 use bevy::image::ImageFilterMode;
+use bevy::picking::hover::{HoverMap, PickingInteraction};
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextCursorStyle};
-use bevy::ui::RelativeCursorPosition;
 use bevy::window::PrimaryWindow;
 use bft_assets::dialog::{Control, ControlKind, Dialog, DialogFont, SoundCue};
 use bft_assets::messages::Messages;
@@ -105,7 +105,7 @@ impl Looks {
     /// The bitmap for a state; `None` draws nothing.
     pub fn pick(
         &self,
-        interaction: Interaction,
+        interaction: PickingInteraction,
         selected: bool,
         disabled: bool,
     ) -> Option<&Handle<Image>> {
@@ -113,7 +113,7 @@ impl Looks {
             return self.disabled.as_ref().or(self.idle.as_ref());
         }
         match interaction {
-            Interaction::Pressed => self
+            PickingInteraction::Pressed => self
                 .pressed
                 .as_ref()
                 .or(self.hover.as_ref())
@@ -123,8 +123,8 @@ impl Looks {
                 .as_ref()
                 .or(self.hover.as_ref())
                 .or(self.idle.as_ref()),
-            Interaction::Hovered => self.hover.as_ref().or(self.idle.as_ref()),
-            Interaction::None => self.idle.as_ref(),
+            PickingInteraction::Hovered => self.hover.as_ref().or(self.idle.as_ref()),
+            PickingInteraction::None => self.idle.as_ref(),
         }
     }
 }
@@ -574,7 +574,7 @@ impl<'a> DialogPainter<'a> {
             .unwrap_or(Vec2::ZERO);
         let disabled = wiring.show == Show::Disabled;
         let shown = looks
-            .pick(Interaction::None, wiring.selected, disabled)
+            .pick(PickingInteraction::None, wiring.selected, disabled)
             .cloned();
 
         let mut node = commands.spawn((
@@ -602,6 +602,9 @@ impl<'a> DialogPainter<'a> {
         if interactive {
             node.insert((
                 Button,
+                // Picking's state rather than `Interaction`, which only sees
+                // a pointer over a window: the UI may draw into an image.
+                PickingInteraction::default(),
                 ArtButton,
                 looks,
                 Cues {
@@ -735,9 +738,7 @@ impl<'a> DialogPainter<'a> {
             }
             ControlKind::Slider { fill } => {
                 if let (Some(key), Some(art)) = (wiring.setting, self.menus.art(fill)) {
-                    commands
-                        .entity(entity)
-                        .insert((DialogSlider(key), RelativeCursorPosition::default()));
+                    commands.entity(entity).insert(DialogSlider(key));
                     commands.spawn((
                         SliderFill {
                             key,
@@ -898,7 +899,7 @@ fn update_filter(
 fn apply_looks(
     mut controls: Query<(
         &Looks,
-        &Interaction,
+        &PickingInteraction,
         &mut ImageNode,
         Has<Selected>,
         Has<Disabled>,
@@ -926,21 +927,24 @@ struct LastRollover(Option<(String, String)>);
 
 /// Rollover and select sounds.
 fn play_cues(
-    controls: Query<(&Interaction, &Cues, &DialogControl, Has<Disabled>), Changed<Interaction>>,
-    all: Query<(&Interaction, &DialogControl)>,
+    controls: Query<
+        (&PickingInteraction, &Cues, &DialogControl, Has<Disabled>),
+        Changed<PickingInteraction>,
+    >,
+    all: Query<(&PickingInteraction, &DialogControl)>,
     mut last: ResMut<LastRollover>,
     mut sounds: MessageWriter<PlaySound>,
 ) {
     for (interaction, cues, control, disabled) in &controls {
         let key = Some((control.dialog.clone(), control.name.clone()));
         match interaction {
-            Interaction::Hovered if last.0 != key => {
+            PickingInteraction::Hovered if last.0 != key => {
                 last.0 = key;
                 if let Some(cue) = &cues.rollover {
                     sounds.write(cue_sound(cue));
                 }
             }
-            Interaction::Pressed if !disabled => {
+            PickingInteraction::Pressed if !disabled => {
                 if let Some(cue) = &cues.activate {
                     sounds.write(cue_sound(cue));
                 }
@@ -952,7 +956,7 @@ fn play_cues(
     if last.0.is_some()
         && all
             .iter()
-            .all(|(interaction, _)| *interaction == Interaction::None)
+            .all(|(interaction, _)| *interaction == PickingInteraction::None)
     {
         last.0 = None;
     }
@@ -967,18 +971,25 @@ fn cue_sound(cue: &SoundCue) -> PlaySound {
 
 /// A slider held down sets its volume from where the pointer is along it.
 fn drag_sliders(
-    sliders: Query<(&DialogSlider, &Interaction, &RelativeCursorPosition)>,
+    sliders: Query<(Entity, &DialogSlider, &PickingInteraction)>,
+    // Optional so a headless test app without picking still builds.
+    hovers: Option<Res<HoverMap>>,
     settings: Res<Settings>,
     mut clicks: MessageWriter<UiClick>,
 ) {
-    for (slider, interaction, cursor) in &sliders {
-        if *interaction != Interaction::Pressed {
+    let Some(hovers) = hovers else {
+        return;
+    };
+    for (entity, slider, interaction) in &sliders {
+        if *interaction != PickingInteraction::Pressed {
             continue;
         }
-        let Some(normalized) = cursor.normalized else {
+        // Across the slider from −0.5 to 0.5, from whichever pointer is on
+        // it.
+        let Some(along) = hovers.values().find_map(|hits| hits.get(&entity)?.position) else {
             continue;
         };
-        let percent = ((normalized.x + 0.5).clamp(0.0, 1.0) * 100.0).round() as u8;
+        let percent = ((along.x + 0.5).clamp(0.0, 1.0) * 100.0).round() as u8;
         let current = (setting_level(&settings, slider.0) * 100.0).round() as u8;
         // Tenths, as the settings keep them.
         if percent.abs_diff(current) >= 5 {
@@ -1128,23 +1139,23 @@ mod tests {
             disabled: handle(4),
         };
         assert_eq!(
-            looks.pick(Interaction::None, false, false),
+            looks.pick(PickingInteraction::None, false, false),
             handle(1).as_ref()
         );
         assert_eq!(
-            looks.pick(Interaction::Hovered, false, false),
+            looks.pick(PickingInteraction::Hovered, false, false),
             handle(2).as_ref()
         );
         assert_eq!(
-            looks.pick(Interaction::Pressed, false, false),
+            looks.pick(PickingInteraction::Pressed, false, false),
             handle(3).as_ref()
         );
         assert_eq!(
-            looks.pick(Interaction::None, true, false),
+            looks.pick(PickingInteraction::None, true, false),
             handle(3).as_ref()
         );
         assert_eq!(
-            looks.pick(Interaction::Hovered, false, true),
+            looks.pick(PickingInteraction::Hovered, false, true),
             handle(4).as_ref()
         );
 
@@ -1153,9 +1164,9 @@ mod tests {
             hover: handle(2),
             ..default()
         };
-        assert_eq!(checkbox.pick(Interaction::None, false, false), None);
+        assert_eq!(checkbox.pick(PickingInteraction::None, false, false), None);
         assert_eq!(
-            checkbox.pick(Interaction::Hovered, false, false),
+            checkbox.pick(PickingInteraction::Hovered, false, false),
             handle(2).as_ref()
         );
     }

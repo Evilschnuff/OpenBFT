@@ -14,6 +14,7 @@
 //! a test drives a screen by writing one rather than simulating a pointer.
 
 use bevy::picking::events::{Click, Pointer};
+use bevy::picking::hover::PickingInteraction;
 use bevy::picking::pointer::PointerButton;
 use bevy::prelude::*;
 use bft_assets::DataPaths;
@@ -272,14 +273,14 @@ pub fn dispatch_clicks(
 /// Colour each button for its state: idle, hovered, pressed, selected,
 /// disabled.
 ///
-/// Every frame rather than on `Changed<Interaction>`, because `Selected` and
+/// Every frame rather than on `Changed<PickingInteraction>`, because `Selected` and
 /// `Disabled` come and go without the interaction changing. There are a few
 /// dozen buttons at most.
 #[allow(clippy::type_complexity)]
 pub fn button_colours(
     mut buttons: Query<
         (
-            &Interaction,
+            &PickingInteraction,
             &mut BackgroundColor,
             &mut BorderColor,
             Has<Selected>,
@@ -293,11 +294,11 @@ pub fn button_colours(
             (BUTTON_DISABLED, BUTTON_DISABLED)
         } else {
             match (interaction, selected) {
-                (Interaction::Pressed, _) => (BUTTON_PRESSED, ACCENT),
-                (Interaction::Hovered, true) => (BUTTON_SELECTED, ACCENT),
-                (Interaction::Hovered, false) => (BUTTON_HOVER, CYAN),
-                (Interaction::None, true) => (BUTTON_SELECTED, ACCENT),
-                (Interaction::None, false) => (BUTTON_IDLE, BUTTON_IDLE),
+                (PickingInteraction::Pressed, _) => (BUTTON_PRESSED, ACCENT),
+                (PickingInteraction::Hovered, true) => (BUTTON_SELECTED, ACCENT),
+                (PickingInteraction::Hovered, false) => (BUTTON_HOVER, CYAN),
+                (PickingInteraction::None, true) => (BUTTON_SELECTED, ACCENT),
+                (PickingInteraction::None, false) => (BUTTON_IDLE, BUTTON_IDLE),
             }
         };
         background.set_if_neq(BackgroundColor(fill));
@@ -309,6 +310,9 @@ pub fn button_colours(
 pub fn button(label: impl Into<String>, action: UiAction, width: f32) -> impl Bundle {
     (
         Button,
+        // Picking's state rather than `Interaction`, which only sees a
+        // pointer over a window: the UI may draw into an image.
+        PickingInteraction::default(),
         UiButton(action),
         Node {
             width: px(width),
