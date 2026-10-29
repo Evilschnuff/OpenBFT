@@ -6,10 +6,11 @@
 //! Only `bft-bin` depends on this crate, behind its `vr` feature, and uses
 //! it only for `play --vr` and `view --vr`; nothing in `bft-sim`,
 //! `bft-assets` or `bft-game` names it (DESIGN §10). What it takes from
-//! `bft-game` are three hooks that know nothing of VR:
+//! `bft-game` are four hooks that know nothing of VR:
 //! [`AuxiliaryCamera`] keeps the eye cameras out of "the" main camera,
-//! [`ExternalAim`] lets the gaze aim instead of the cursor, and
-//! [`UiCamera`] is the UI camera to retarget. With no OpenXR runtime
+//! [`ExternalAim`] lets the gaze aim instead of the cursor,
+//! [`ExternalActions`](bft_game::ui::ExternalActions) lets the controllers
+//! press actions, and [`UiCamera`] is the UI camera to retarget. With no OpenXR runtime
 //! answering, [`with_xr`] falls back to the flat renderer and [`VrPlugin`]
 //! adds nothing, so a `--vr` run is then the flat game.
 //!
@@ -23,21 +24,29 @@
 //! that follows "the" camera (sky dome, LOD, billboards, the listener) keeps
 //! following it; the head is within a metre of it.
 //!
-//! The turret aims where the eyes look when the headset tracks them
-//! ([`eyes`]), and where the head points otherwise: a ray from between the
-//! eyes, handed to `bft-game` as the [`ExternalAim`], with a reticle where
-//! it lands. The UI (HUD, menus, dialogs) draws into an image that only the
-//! eyes see: in play the HUD's clusters each on their own tile around the
-//! seat ([`hud`]), and with a menu up the whole image on one panel in front
-//! of it.
+//! The turret aims along a beam from the right controller ([`pointer`]),
+//! or, switched with a click of the right stick ([`AimSource`]), where the
+//! eyes look when the headset tracks them ([`eyes`]) and where the head
+//! points otherwise. Either way the ray goes to `bft-game` as the
+//! [`ExternalAim`], with a reticle where it lands; the head is also the
+//! fallback while the controller is not tracked. The controllers press the game's actions ([`controllers`]):
+//! drive on the left stick, fire on the right trigger. The UI (HUD, menus,
+//! dialogs) draws into an image that only the eyes see: in play the HUD's
+//! clusters each on their own tile, the bottom row's riding on the
+//! controllers ([`hud`]), and with a
+//! menu up the whole image on one panel in front of it, clicked with a beam
+//! from the right controller ([`pointer`]).
 //!
 //! Recoil had no VR, so none of this rests on the original: every placement
 //! here is a presentation choice, and the constants below say which.
 
 #![cfg(not(target_os = "macos"))]
 
+mod controllers;
 mod eyes;
+mod hands;
 mod hud;
+mod pointer;
 
 use bevy::app::PluginGroupBuilder;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
@@ -154,12 +163,18 @@ impl Plugin for VrPlugin {
                 world_and_player().with(PANEL_LAYER)
             })
             .init_resource::<ExternalAim>()
+            .init_resource::<AimSource>()
+            .add_plugins((
+                controllers::ControllersPlugin,
+                pointer::PointerPlugin,
+                hands::HandsPlugin,
+            ))
             .add_systems(Startup, (spawn_panel, spawn_reticle, uncap_window))
             .add_plugins(hud::HudTilesPlugin)
             .add_systems(
                 Update,
                 (
-                    gaze_aim.before(aim_point),
+                    choose_aim.after(pointer::HandRaySet).before(aim_point),
                     place_reticle.after(aim_point),
                     show_ui_on_panel,
                     fit_panel_to_window,
@@ -298,7 +313,7 @@ fn spawn_reticle(
 
 /// A white ring with a dark edge, premultiplied, so it reads against both
 /// the fog and the ground.
-fn ring_image() -> Image {
+pub(crate) fn ring_image() -> Image {
     const SIZE: u32 = 64;
     let centre = (SIZE as f32 - 1.0) / 2.0;
     let pixel = 1.0 / centre;
@@ -358,15 +373,30 @@ fn head(eyes: &Query<&GlobalTransform, With<XrCamera>>) -> Option<Transform> {
     })
 }
 
-/// Aim along the gaze: the eyes' when the runtime locates them, the head's
-/// otherwise.
-fn gaze_aim(
+/// What the turret aims with.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AimSource {
+    /// A beam from the right controller.
+    #[default]
+    Hand,
+    /// The gaze: the eyes when the runtime locates them, the head otherwise.
+    Head,
+}
+
+/// Aim along the hand's beam or the gaze, as the [`AimSource`] says; along
+/// the gaze while the hand is not tracked.
+fn choose_aim(
+    source: Res<AimSource>,
+    hand: Res<pointer::HandRay>,
     eyes: Query<&GlobalTransform, With<XrCamera>>,
     gazes: Query<(&GlobalTransform, &OxrSpaceLocationFlags), With<eyes::EyeGaze>>,
     mut aim: ResMut<ExternalAim>,
 ) {
-    let gaze = eyes::located_gaze(&gazes).or_else(|| head(&eyes));
-    aim.0 = gaze.map(|gaze| Ray3d::new(gaze.translation, gaze.forward()));
+    let hand = hand.world.filter(|_| *source == AimSource::Hand);
+    aim.0 = hand.or_else(|| {
+        let gaze = eyes::located_gaze(&gazes).or_else(|| head(&eyes))?;
+        Some(Ray3d::new(gaze.translation, gaze.forward()))
+    });
 }
 
 /// Put the reticle on the local player's aim point, facing the head, at a
@@ -466,33 +496,55 @@ fn fit_panel_to_window(
     }
 }
 
-/// Carry the tracking space with the main camera: its position, and its
-/// yaw about world up.
-#[allow(clippy::type_complexity)]
-fn follow_main_camera(
-    cameras: Query<
-        (&Transform, &GlobalTransform, Has<ChildOf>),
-        (MainCamera3d, Without<XrTrackingRoot>),
-    >,
-    mut roots: Query<&mut Transform, With<XrTrackingRoot>>,
-) {
-    let Some((local, global, parented)) = cameras.iter().next() else {
-        return;
-    };
-    // Before propagation, so the seat moves with the camera this frame
-    // rather than a frame behind it. A parented camera's own transform is not
-    // its world one, so that case settles for last frame's.
-    let pose = if parented {
+/// The main camera's world pose as of now, for [`seat_pose`].
+///
+/// Its own transform when it has no parent, so a camera moved this frame
+/// counts before propagation; a parented camera's own transform is not its
+/// world one, so that case settles for last frame's.
+pub(crate) type MainCameras<'w, 's> = Query<
+    'w,
+    's,
+    (&'static Transform, &'static GlobalTransform, Has<ChildOf>),
+    (MainCamera3d, Without<XrTrackingRoot>),
+>;
+
+/// The main camera's pose, if there is one (see [`MainCameras`]).
+pub(crate) fn main_camera_pose(cameras: &MainCameras) -> Option<Transform> {
+    let (local, global, parented) = cameras.iter().next()?;
+    Some(if parented {
         global.compute_transform()
     } else {
         *local
-    };
+    })
+}
 
+/// Where the seat goes for a camera at `camera`: its position, and its yaw
+/// about world up. Looking straight up or down there is no yaw to take, so
+/// `previous`'s stays.
+pub(crate) fn seat_pose(camera: Transform, previous: Transform) -> Transform {
+    let rotation = Dir3::new(camera.forward().as_vec3().with_y(0.0))
+        .map(|forward| Transform::default().looking_to(forward, Vec3::Y).rotation)
+        .unwrap_or(previous.rotation);
+    Transform {
+        translation: camera.translation,
+        rotation,
+        scale: previous.scale,
+    }
+}
+
+/// Carry the tracking space with the main camera: its position, and its
+/// yaw about world up.
+///
+/// Before propagation, so the seat moves with the camera this frame rather
+/// than a frame behind it.
+pub(crate) fn follow_main_camera(
+    cameras: MainCameras,
+    mut roots: Query<&mut Transform, With<XrTrackingRoot>>,
+) {
+    let Some(camera) = main_camera_pose(&cameras) else {
+        return;
+    };
     for mut root in &mut roots {
-        root.translation = pose.translation;
-        // Looking straight up or down there is no yaw to take; keep the last.
-        if let Ok(forward) = Dir3::new(pose.forward().as_vec3().with_y(0.0)) {
-            root.rotation = Transform::default().looking_to(forward, Vec3::Y).rotation;
-        }
+        *root = seat_pose(camera, *root);
     }
 }

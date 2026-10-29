@@ -16,6 +16,19 @@
 //! knows what the art is, so it follows the install's layout, the fallback
 //! HUD and the HUD scale setting alike.
 //!
+//! # On the hands
+//!
+//! In play every cluster rides on a controller ([`HAND_MOUNTS`]): the
+//! monitor (sensor view and message tab) on the left hand with the top
+//! strip's left and middle over it, the health gauge and forms on the right
+//! with the weapon strip and the top strip's right over them, since the
+//! right hand holds the weapon, form and weak/strong controls. They are
+//! pinned to the controller lying on its top, face up and their own tops
+//! toward its front ([`HAND_TILT`]), so they read the right way up to a
+//! glance down at the hands, and turn as the wrist does; smaller than at
+//! the seat, since they are read from nearer. A hand's tiles fall back to
+//! their places ahead of the seat while its controller is not tracked.
+//!
 //! Anything over the HUD (the pause menu, a result screen, the front end, a
 //! cinematic) and the large automap need the whole picture, so then the
 //! single panel comes back instead.
@@ -23,12 +36,14 @@
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use bevy::ui::{ComputedNode, UiGlobalTransform};
+use bevy_mod_openxr::spaces::OxrSpaceLocationFlags;
 use bevy_mod_xr::session::XrTrackingRoot;
 use bft_game::ui::GameplayGate;
 use bft_game::ui::automap::AutomapLarge;
 use bft_game::ui::hud::layout::{Anchor, Column, Row};
 use bft_game::ui::hud::{HudMap, HudRoot};
 
+use crate::hands::{Grip, Side, located_grip};
 use crate::{PANEL_LAYER, Panel, PanelMaterial, spawn_panel};
 
 /// How far in front of the head the tiles hang, metres.
@@ -56,6 +71,39 @@ const TILE_DROP: f32 = 0.6;
 /// gives the original's clusters a fixed size in the headset whatever the
 /// window, and the HUD scale setting still scales them.
 const SCREEN_HEIGHT_METRES: f32 = 0.86;
+
+/// How tall the whole HUD image would be on a hand, metres: smaller than
+/// [`SCREEN_HEIGHT_METRES`] by about the ratio of a held-up hand's distance
+/// (half a metre) to [`TILE_DISTANCE`], so a cluster looks about as large.
+const HAND_SCREEN_HEIGHT_METRES: f32 = 0.35;
+
+/// How far above the grip (the palm) a hand's tiles lie, metres: clear of
+/// the controller's top.
+const HAND_LIFT: f32 = 0.05;
+
+/// The gap between tiles stacked on one hand, metres.
+const HAND_GAP: f32 = 0.01;
+
+/// How far a hand's tiles lean back from upright, radians. A quarter turn
+/// lays them flat on the controller's top, facing up: read from above, as a
+/// glance down at hands held near the body reads them. Less stands them up
+/// toward the player.
+const HAND_TILT: f32 = std::f32::consts::FRAC_PI_2;
+
+/// Which hand each region rides on, each hand's from the bottom up.
+const HAND_MOUNTS: [(Anchor, Side); 6] = [
+    (anchor(Column::Left, Row::Bottom), Side::Left),
+    (anchor(Column::Left, Row::Top), Side::Left),
+    (anchor(Column::Centre, Row::Top), Side::Left),
+    (anchor(Column::Right, Row::Bottom), Side::Right),
+    (anchor(Column::Centre, Row::Bottom), Side::Right),
+    (anchor(Column::Right, Row::Top), Side::Right),
+];
+
+/// An anchor, briefly.
+const fn anchor(column: Column, row: Row) -> Anchor {
+    Anchor { column, row }
+}
 
 /// The six regions the original anchors its HUD to.
 const REGIONS: [Anchor; 6] = [
@@ -123,8 +171,8 @@ fn spawn_tiles(
 }
 
 /// Show the HUD as tiles while playing, and the whole panel otherwise.
-// Eleven parameters: what decides the mode, the HUD's nodes, the tiles and
-// the panel.
+// Twelve parameters: what decides the mode, the HUD's nodes, the hands, the
+// tiles and the panel.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn layout_tiles(
     gate: GameplayGate,
@@ -138,6 +186,7 @@ fn layout_tiles(
         (&ComputedNode, &UiGlobalTransform, &InheritedVisibility),
         Or<(With<ImageNode>, With<Text>)>,
     >,
+    grips: Query<(&Grip, &Transform, &OxrSpaceLocationFlags), Without<HudTile>>,
     mut tiles: Query<(
         &HudTile,
         &MeshMaterial3d<PanelMaterial>,
@@ -181,10 +230,12 @@ fn layout_tiles(
             Rect::from_center_size(transform.affine().translation, node.size())
         })
         .collect();
+    let bounds_of = |anchor: Anchor| cluster_bounds(region_rect(anchor, size), &rects);
     let metres_per_pixel = SCREEN_HEIGHT_METRES / size.y;
+    let hand_metres_per_pixel = HAND_SCREEN_HEIGHT_METRES / size.y;
 
     for (tile, material, mut transform, mut visibility) in &mut tiles {
-        let Some(bounds) = cluster_bounds(region_rect(tile.0, size), &rects) else {
+        let Some(bounds) = bounds_of(tile.0) else {
             visibility.set_if_neq(Visibility::Hidden);
             continue;
         };
@@ -203,7 +254,24 @@ fn layout_tiles(
             current.uv_rect = uv_rect;
         }
 
-        let pose = tile_pose(tile.0, bounds.size() * metres_per_pixel);
+        let on_hand = HAND_MOUNTS
+            .iter()
+            .find(|(anchor, _)| *anchor == tile.0)
+            .and_then(|&(_, side)| Some((side, located_grip(&grips, side)?)));
+        let pose = match on_hand {
+            Some((side, grip)) => {
+                // The heights of the tiles below this one on the same hand.
+                let below: f32 = HAND_MOUNTS
+                    .iter()
+                    .filter(|(_, other)| *other == side)
+                    .take_while(|(anchor, _)| *anchor != tile.0)
+                    .filter_map(|&(anchor, _)| bounds_of(anchor))
+                    .map(|below| below.height() * hand_metres_per_pixel + HAND_GAP)
+                    .sum();
+                hand_tile_pose(grip, below, bounds.size() * hand_metres_per_pixel)
+            }
+            None => tile_pose(tile.0, bounds.size() * metres_per_pixel),
+        };
         if *transform != pose {
             *transform = pose;
         }
@@ -281,6 +349,22 @@ fn tile_pose(anchor: Anchor, size: Vec2) -> Transform {
         .with_scale(size.extend(1.0))
 }
 
+/// Where a tile `size` metres large sits on a hand whose grip pose is
+/// `grip`, with `below` metres of other tiles under it.
+///
+/// In the grip's frame (+y out of the top of the controller, −z along it):
+/// [`HAND_LIFT`] over the grip, leaning back by [`HAND_TILT`] (flat, face
+/// up, its top toward the controller's front), and stacked along its own
+/// up, away from the hand.
+fn hand_tile_pose(grip: Transform, below: f32, size: Vec2) -> Transform {
+    let lean = Quat::from_rotation_x(-HAND_TILT);
+    let up = lean * Vec3::Y;
+    let centre = Vec3::Y * HAND_LIFT + up * (below + size.y / 2.0);
+    grip * Transform::from_translation(centre)
+        .with_rotation(lean)
+        .with_scale(size.extend(1.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +423,34 @@ mod tests {
         assert_eq!(
             cluster_bounds(region(Column::Right, Row::Top), &drawn),
             None
+        );
+    }
+
+    #[test]
+    fn a_hand_tile_lies_face_up_on_the_controller() {
+        let size = Vec2::new(0.1, 0.05);
+
+        // A controller held level, pointing ahead.
+        let level = hand_tile_pose(Transform::default(), 0.06, size);
+        let face = level.rotation * Vec3::Z;
+        assert!(face.y > 0.99, "faces up: {face:?}");
+        assert!((level.translation.y - HAND_LIFT).abs() < 1e-6, "{level:?}");
+        // Read from above and behind, its top is toward the front and its
+        // image runs left to right across the hand.
+        assert!((level.rotation * Vec3::Y).z < -0.99);
+        assert!((level.rotation * Vec3::X).x > 0.99);
+        // A tile stacked on it lies further forward.
+        let lower = hand_tile_pose(Transform::default(), 0.0, size);
+        assert!(level.translation.z < lower.translation.z);
+
+        // Turning the controller turns the tile with it. (`angle_between`
+        // goes through `acos`, good to about 3e-4 near zero in `f32`.)
+        let turned = Transform::from_rotation(Quat::from_rotation_y(1.0));
+        let pose = hand_tile_pose(turned, 0.06, size);
+        assert!(
+            pose.rotation
+                .angle_between(turned.rotation * level.rotation)
+                < 1e-3
         );
     }
 
