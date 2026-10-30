@@ -444,7 +444,10 @@ impl DevPanel for ModelsPanel {
                 .get_resource::<MaterialCache>()
                 .map_or(0, MaterialCache::len),
             world.resource::<Assets<Mesh>>().len(),
-            world.resource::<Assets<StandardMaterial>>().len(),
+            world.resource::<Assets<StandardMaterial>>().len()
+                + world
+                    .get_resource::<Assets<crate::cutaway::ModelMaterial>>()
+                    .map_or(0, Assets::len),
             world.resource::<Assets<Image>>().len(),
         ));
 

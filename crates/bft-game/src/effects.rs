@@ -1122,6 +1122,7 @@ mod tests {
         app.init_asset::<Mesh>()
             .init_asset::<Image>()
             .init_asset::<StandardMaterial>()
+            .init_asset::<crate::cutaway::ModelMaterial>()
             .init_asset::<LevelData>()
             .init_asset::<TextureSet>()
             .init_resource::<crate::mesh_builder::MeshCache>()

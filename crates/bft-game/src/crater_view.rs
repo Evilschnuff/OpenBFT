@@ -12,6 +12,8 @@
 //! leave out.
 
 use bevy::prelude::*;
+
+use crate::cutaway::ModelMaterial;
 use bft_assets::level::LevelData;
 use bft_assets::materials::MaterialDesc;
 use bft_assets::reader::ReaderData;
@@ -146,7 +148,7 @@ fn redraw_cratered_nodes(
     sets: Res<Assets<TextureSet>>,
     pool: Res<TexturePool>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
     mut material_cache: ResMut<MaterialCache>,
 ) {
     if cratered.is_empty() {

@@ -1,4 +1,6 @@
-//! `MaterialDesc` -> `StandardMaterial`, plus the two texture animations.
+//! `MaterialDesc` -> `StandardMaterial`, drawn as a
+//! [`ModelMaterial`](crate::cutaway::ModelMaterial), plus the two texture
+//! animations.
 //!
 //! [`build_material`] is what the level spawner calls once per
 //! (model, material) group. Identical requests share one handle through
@@ -29,6 +31,8 @@ use bft_assets::materials::MaterialDesc;
 use bft_assets::reader::ReaderData;
 use bft_assets::reader::effects::{EffectCycles, parse_effect_cycles};
 use bft_assets::textures::{TextureAlpha, TexturePool, TextureSet};
+
+use crate::cutaway::{ModelMaterial, model_material};
 
 /// Presentation-side materials: the cache, the animations and their systems.
 pub struct MaterialsPlugin;
@@ -148,7 +152,7 @@ pub struct MaterialParams<'a> {
 /// materials, ~18k polygons), so sharing is worth the hashing.
 #[derive(Resource, Debug, Default)]
 pub struct MaterialCache {
-    entries: HashMap<u64, Handle<StandardMaterial>>,
+    entries: HashMap<u64, Handle<ModelMaterial>>,
 }
 
 impl MaterialCache {
@@ -168,7 +172,7 @@ impl MaterialCache {
     }
 }
 
-/// Build (or reuse) the `StandardMaterial` for one material description.
+/// Build (or reuse) the material for one material description.
 ///
 /// `set` is the level's own texture archive; a name it does not have is
 /// looked up in `pool`, because a level references textures held only in
@@ -180,8 +184,8 @@ pub fn build_material(
     set: &TextureSet,
     pool: Option<(&TexturePool, &Assets<TextureSet>)>,
     cache: &mut MaterialCache,
-    materials: &mut Assets<StandardMaterial>,
-) -> Handle<StandardMaterial> {
+    materials: &mut Assets<ModelMaterial>,
+) -> Handle<ModelMaterial> {
     let shareable = is_shareable(&params);
     let key = cache_key(&params);
 
@@ -189,7 +193,7 @@ pub fn build_material(
         return handle.clone();
     }
 
-    let handle = materials.add(standard_material(&params, set, pool));
+    let handle = materials.add(model_material(standard_material(&params, set, pool)));
 
     if shareable {
         cache.entries.insert(key, handle.clone());
@@ -466,7 +470,7 @@ pub struct AnimatedPart {
 #[allow(clippy::type_complexity)]
 fn claim_animated_parts(
     mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
     nodes: Query<
         (Option<&CycledTexture>, Option<&TextureScroll>, &Children),
         (
@@ -475,7 +479,7 @@ fn claim_animated_parts(
         ),
     >,
     parts: Query<
-        &MeshMaterial3d<StandardMaterial>,
+        &MeshMaterial3d<ModelMaterial>,
         (With<crate::mesh_builder::ModelPart>, Without<AnimatedPart>),
     >,
 ) {
@@ -489,6 +493,7 @@ fn claim_animated_parts(
             };
             let cycle = cycle.filter(|cycle| {
                 source
+                    .base
                     .base_color_texture
                     .as_ref()
                     .is_some_and(|texture| cycle.frames.contains(texture))
@@ -522,10 +527,10 @@ fn claim_animated_parts(
 /// both set [`CycledTexture::frame`] directly.
 fn advance_cycled_textures(
     time: Res<Time>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
     mut cycled: Query<(
         &mut CycledTexture,
-        &MeshMaterial3d<StandardMaterial>,
+        &MeshMaterial3d<ModelMaterial>,
         Option<&mut AnimatedPart>,
     )>,
 ) {
@@ -546,7 +551,7 @@ fn advance_cycled_textures(
             continue;
         };
 
-        material.base_color_texture = Some(frame);
+        material.base.base_color_texture = Some(frame);
         if let Some(mut part) = part {
             part.shown = Some(cycle.frame);
         }
@@ -556,8 +561,8 @@ fn advance_cycled_textures(
 /// Advance each scrolling material's `uv_transform`.
 fn advance_texture_scroll(
     time: Res<Time>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut scrolling: Query<(&mut TextureScroll, &MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
+    mut scrolling: Query<(&mut TextureScroll, &MeshMaterial3d<ModelMaterial>)>,
 ) {
     let delta = time.delta_secs();
 
@@ -567,7 +572,7 @@ fn advance_texture_scroll(
             continue;
         };
 
-        material.uv_transform.translation = offset;
+        material.base.uv_transform.translation = offset;
     }
 }
 
@@ -605,7 +610,7 @@ mod tests {
     #[test]
     fn identical_requests_share_a_handle_and_different_ones_do_not() {
         let mut cache = MaterialCache::default();
-        let mut materials = Assets::<StandardMaterial>::default();
+        let mut materials = Assets::<ModelMaterial>::default();
         let set = TextureSet::default();
         let desc = textured("wall");
 
@@ -627,7 +632,7 @@ mod tests {
     #[test]
     fn animated_materials_are_never_shared() {
         let mut cache = MaterialCache::default();
-        let mut materials = Assets::<StandardMaterial>::default();
+        let mut materials = Assets::<ModelMaterial>::default();
         let set = TextureSet::default();
 
         let cycled = MaterialDesc::Textured {

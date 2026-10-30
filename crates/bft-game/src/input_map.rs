@@ -22,6 +22,17 @@ use crate::chase_camera::ChaseCamera;
 use crate::guided_view::{ExternalGuide, GUIDED_DEAD_ZONE, GuidedMissile, guide_from_cursor};
 use crate::ui::{Action, ActionInput};
 
+/// Throttle and steering from a plugin, added to the drive keys': a device
+/// that drives by naming where to go rather than by holding keys (a
+/// headset's stick, steering toward the direction it is pushed).
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct ExternalDrive {
+    /// Forward and back, −1..1, as [`PlayerInput::throttle`].
+    pub throttle: f32,
+    /// Left and right, −1..1, as [`PlayerInput::steer`].
+    pub steer: f32,
+}
+
 /// The input map: reads devices, writes the local vehicle's `PlayerInput`.
 pub struct InputMapPlugin;
 
@@ -34,7 +45,8 @@ impl Plugin for InputMapPlugin {
     }
 }
 
-/// Fill the locally controlled vehicle's input from the devices.
+/// Fill the locally controlled vehicle's input from the devices, and from
+/// an [`ExternalDrive`] when a plugin supplies one.
 ///
 /// While a tether-guided missile is being flown
 /// ([`GuidedMissile`](crate::guided_view::GuidedMissile)) the controls are
@@ -43,10 +55,11 @@ impl Plugin for InputMapPlugin {
 /// go, and the tank neither drives nor fires. The trigger stays dead after
 /// that until it is released, so the press that let go does not launch the
 /// next missile.
-// Nine parameters, all ECS injections.
+// Ten parameters, all ECS injections.
 #[allow(clippy::too_many_arguments)]
 pub fn read_input(
     actions: ActionInput,
+    external_drive: Option<Res<ExternalDrive>>,
     motion: Res<AccumulatedMouseMotion>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     table: Option<Res<VehicleTable>>,
@@ -123,8 +136,10 @@ pub fn read_input(
             continue;
         }
 
-        input.throttle = axis(&actions, Action::Forward, Action::Back);
-        input.steer = axis(&actions, Action::Right, Action::Left);
+        let drive = external_drive.as_deref().copied().unwrap_or_default();
+        input.throttle =
+            (axis(&actions, Action::Forward, Action::Back) + drive.throttle).clamp(-1.0, 1.0);
+        input.steer = (axis(&actions, Action::Right, Action::Left) + drive.steer).clamp(-1.0, 1.0);
         input.pitch = axis(&actions, Action::Climb, Action::Dive);
         input.fire = actions.pressed(Action::Fire) && !*hold_fire;
         input.fire_alt = actions.pressed(Action::AltFire);

@@ -20,6 +20,8 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+
+use crate::cutaway::ModelMaterial;
 use bft_sim::anim::{AnimCamera, AnimLights, AnimOpacity, AnimOutput, AnimPlaced, AnimScreenFx};
 use bft_sim::level::NodeActive;
 
@@ -79,11 +81,8 @@ pub fn apply_anim_opacity(
     mut removed: RemovedComponents<AnimOpacity>,
     children: Query<&Children>,
     opacities: Query<(), With<AnimOpacity>>,
-    mut meshes: Query<(
-        &mut MeshMaterial3d<StandardMaterial>,
-        Option<&FadedMaterial>,
-    )>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut meshes: Query<(&mut MeshMaterial3d<ModelMaterial>, Option<&FadedMaterial>)>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
 ) {
     let mut targets: Vec<(Entity, Option<f32>)> = changed
         .iter()
@@ -101,7 +100,7 @@ pub fn apply_anim_opacity(
                         let Some(original) = materials.get(&handle.0).cloned() else {
                             continue;
                         };
-                        let base = (original.base_color.alpha(), original.alpha_mode);
+                        let base = (original.base.base_color.alpha(), original.base.alpha_mode);
                         handle.0 = materials.add(original);
                         commands.entity(entity).insert(FadedMaterial {
                             base_alpha: base.0,
@@ -112,8 +111,8 @@ pub fn apply_anim_opacity(
                 };
                 if let Some(mut material) = materials.get_mut(&handle.0) {
                     let alpha = base_alpha * opacity.unwrap_or(1.0);
-                    material.base_color.set_alpha(alpha);
-                    material.alpha_mode = if alpha < 1.0 && base_mode == AlphaMode::Opaque {
+                    material.base.base_color.set_alpha(alpha);
+                    material.base.alpha_mode = if alpha < 1.0 && base_mode == AlphaMode::Opaque {
                         AlphaMode::Blend
                     } else {
                         base_mode
@@ -333,7 +332,7 @@ mod tests {
             bevy::app::TaskPoolPlugin::default(),
             bevy::asset::AssetPlugin::default(),
         ));
-        app.init_asset::<StandardMaterial>()
+        app.init_asset::<ModelMaterial>()
             .init_resource::<AnimCamera>()
             .init_resource::<AnimScreenFx>()
             .init_resource::<AnimLights>()
@@ -348,8 +347,8 @@ mod tests {
         app.add_systems(Update, apply_anim_opacity);
         let shared = app
             .world_mut()
-            .resource_mut::<Assets<StandardMaterial>>()
-            .add(StandardMaterial::default());
+            .resource_mut::<Assets<ModelMaterial>>()
+            .add(crate::cutaway::model_material(StandardMaterial::default()));
         let faded = app.world_mut().spawn(AnimOpacity(0.25)).id();
         let mesh = app
             .world_mut()
@@ -359,23 +358,28 @@ mod tests {
 
         app.update();
 
-        let materials = app.world().resource::<Assets<StandardMaterial>>();
+        let materials = app.world().resource::<Assets<ModelMaterial>>();
         let mine = &app
             .world()
-            .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+            .get::<MeshMaterial3d<ModelMaterial>>(mesh)
             .expect("mesh")
             .0;
         assert_ne!(*mine, shared, "the fading mesh has its own material");
         let mine = materials.get(mine).expect("material");
-        assert!((mine.base_color.alpha() - 0.25).abs() < 1e-6);
-        assert_eq!(mine.alpha_mode, AlphaMode::Blend);
+        assert!((mine.base.base_color.alpha() - 0.25).abs() < 1e-6);
+        assert_eq!(mine.base.alpha_mode, AlphaMode::Blend);
         let theirs = &app
             .world()
-            .get::<MeshMaterial3d<StandardMaterial>>(other)
+            .get::<MeshMaterial3d<ModelMaterial>>(other)
             .expect("mesh")
             .0;
         assert_eq!(
-            materials.get(theirs).expect("material").base_color.alpha(),
+            materials
+                .get(theirs)
+                .expect("material")
+                .base
+                .base_color
+                .alpha(),
             1.0
         );
     }

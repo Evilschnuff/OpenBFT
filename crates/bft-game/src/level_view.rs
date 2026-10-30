@@ -23,6 +23,8 @@ use bevy::camera::visibility::VisibilitySystems;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+
+use crate::cutaway::ModelMaterial;
 use bft_assets::axes::AxisConvention;
 use bft_assets::catalog::{LevelCatalog, LevelId};
 use bft_assets::interp::{InterpScripts, RuntimeBindings, TextureAnim};
@@ -423,7 +425,7 @@ pub fn attach_model(
     pool: Res<TexturePool>,
     axes: Option<Res<AxisConvention>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
     mut mesh_cache: ResMut<MeshCache>,
     mut material_cache: ResMut<MaterialCache>,
     effect_cycles: Option<Res<EffectTextureCycles>>,
@@ -1022,7 +1024,7 @@ mod tests {
         ));
         app.init_asset::<Mesh>()
             .init_asset::<Image>()
-            .init_asset::<StandardMaterial>()
+            .init_asset::<ModelMaterial>()
             .init_asset::<LevelData>()
             .init_asset::<TextureSet>()
             .init_resource::<MeshCache>()
@@ -1151,7 +1153,7 @@ mod tests {
         // And the child really carries a mesh and a material.
         let meshes = app
             .world_mut()
-            .query::<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>()
+            .query::<(&Mesh3d, &MeshMaterial3d<ModelMaterial>)>()
             .iter(app.world())
             .count();
         assert_eq!(meshes, 1);

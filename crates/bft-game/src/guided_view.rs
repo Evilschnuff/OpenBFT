@@ -27,6 +27,8 @@
 use avian3d::prelude::SpatialQuery;
 use bevy::camera::primitives::Aabb;
 use bevy::prelude::*;
+
+use crate::cutaway::ModelMaterial;
 use bft_sim::states::AppState;
 use bft_sim::vehicle::Controlled;
 use bft_sim::weapons::{Guided, Projectile};
@@ -91,7 +93,7 @@ pub struct ExternalGuide(pub Vec2);
 
 /// A guided missile's mesh drawn translucent, and the material it had.
 #[derive(Component, Debug, Clone)]
-struct Faded(Handle<StandardMaterial>);
+struct Faded(Handle<ModelMaterial>);
 
 /// The green filter over the view while guiding.
 #[derive(Component, Debug, Clone, Copy)]
@@ -306,8 +308,8 @@ fn fade_the_missile(
     guided: Res<GuidedMissile>,
     mut faded_missile: Local<Option<Entity>>,
     children: Query<&Children>,
-    mut meshes: Query<(&mut MeshMaterial3d<StandardMaterial>, Option<&Faded>)>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut meshes: Query<(&mut MeshMaterial3d<ModelMaterial>, Option<&Faded>)>,
+    mut materials: ResMut<Assets<ModelMaterial>>,
     cameras: Query<&ChaseCamera>,
 ) {
     // Let go, and still flying: its own materials back.
@@ -343,9 +345,9 @@ fn fade_the_missile(
         let Some(mut translucent) = materials.get(&material.0).cloned() else {
             continue;
         };
-        let base = translucent.base_color.to_srgba();
-        translucent.base_color = base.with_alpha(base.alpha * alpha).into();
-        translucent.alpha_mode = AlphaMode::Blend;
+        let base = translucent.base.base_color.to_srgba();
+        translucent.base.base_color = base.with_alpha(base.alpha * alpha).into();
+        translucent.base.alpha_mode = AlphaMode::Blend;
 
         let original = std::mem::replace(&mut material.0, materials.add(translucent));
         commands.entity(entity).insert(Faded(original));

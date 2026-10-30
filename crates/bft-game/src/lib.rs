@@ -23,6 +23,7 @@ pub mod camera_tuning;
 pub mod chase_camera;
 pub mod cinematic_view;
 pub mod crater_view;
+pub mod cutaway;
 pub mod devtools;
 pub mod effects;
 pub mod enemies;
@@ -87,6 +88,7 @@ impl Plugin for GamePlugin {
             pickup_view::PickupViewPlugin,
             cinematic_view::CinematicViewPlugin,
         ))
+        .add_plugins(cutaway::CutawayPlugin)
         .add_plugins(guided_view::GuidedViewPlugin)
         .add_plugins(savegame::SaveGamePlugin)
         // One UI camera for the whole run: boot, menu and loading screens all
