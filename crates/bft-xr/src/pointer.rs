@@ -43,9 +43,9 @@ use bevy_mod_xr::session::{XrSessionCreated, XrTrackingRoot, session_available};
 use bft_game::guided_view::GuidedMissile;
 use bft_sim::vehicle::{Controlled, PlayerInput};
 
+use crate::table::Table;
 use crate::{
-    AimSource, MainCameras, PANEL_LAYER, Panel, PanelMaterial, main_camera_pose, ring_image,
-    seat_pose,
+    AimSource, MainCameras, PANEL_LAYER, Panel, PanelMaterial, View, ring_image, root_pose_now,
 };
 
 /// The beam's picking pointer.
@@ -158,6 +158,7 @@ impl Plugin for PointerPlugin {
             PostUpdate,
             place_beam
                 .after(crate::follow_main_camera)
+                .after(crate::table::place_table)
                 .before(TransformSystems::Propagate)
                 .run_if(openxr_session_running),
         );
@@ -296,11 +297,15 @@ fn spawn_beam(
 /// The aim space is a child of the tracking root, so its own transform is
 /// the hand in the seat's space; that is what is smoothed. Into the world
 /// it goes by where the seat will be this frame, worked out from the camera
-/// the same way [`follow_main_camera`](crate::follow_main_camera) will:
-/// the seat's transform still holds last frame's, and the difference,
-/// while the tank turns, swings a ray's far end by metres.
+/// the same way [`follow_main_camera`](crate::follow_main_camera) will, or
+/// by where the grips have moved the table: the seat's transform still
+/// holds last frame's, and the difference, while the tank turns, swings a
+/// ray's far end by metres.
+#[allow(clippy::too_many_arguments)]
 fn smooth_hand(
     time: Res<Time>,
+    view: Res<View>,
+    table: Res<Table>,
     aims: Query<(&Transform, &OxrSpaceLocationFlags), With<PointerAim>>,
     cameras: MainCameras,
     roots: Query<&Transform, (With<XrTrackingRoot>, Without<PointerAim>)>,
@@ -323,7 +328,7 @@ fn smooth_hand(
     *smoothed = Some(seat);
 
     let last = roots.iter().next().copied().unwrap_or_default();
-    let root = main_camera_pose(&cameras).map_or(last, |camera| seat_pose(camera, last));
+    let root = root_pose_now(*view, &table, &cameras, last);
     let world = root.mul_transform(seat);
     *hand = HandRay {
         seat: Some(seat),

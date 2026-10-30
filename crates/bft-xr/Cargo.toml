@@ -19,6 +19,8 @@ bft-sim = { workspace = true }
 # The crate is empty on macOS, which has no OpenXR runtime (REQUIREMENTS
 # §5.2), so a workspace build there never compiles these.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
+# The laser's ray is stepped past the surfaces the cutaway removes.
+avian3d = { workspace = true }
 bevy_mod_openxr = { workspace = true }
 bevy_mod_xr = { workspace = true }
 openxr = { workspace = true }

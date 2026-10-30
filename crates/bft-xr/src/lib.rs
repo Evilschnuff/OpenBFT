@@ -14,9 +14,16 @@
 //! answering, [`with_xr`] falls back to the flat renderer and [`VrPlugin`]
 //! adds nothing, so a `--vr` run is then the flat game.
 //!
+//! # Two views
+//!
+//! A run starts at the table ([`table`]): the level is a model in front of
+//! the player, who pulls it about with the grips, and the tracking space
+//! is scaled up rather than the level down. A long press of the right stick
+//! switches to the seat and back ([`View`]).
+//!
 //! # The seated view
 //!
-//! The headset's tracking space rides on the main camera (the chase camera
+//! In the seat, the headset's tracking space rides on the main camera (the chase camera
 //! in play, the free-fly camera in the viewer), taking its position and its
 //! yaw but not its pitch: the head does the pitching, and a world that tilts
 //! under a still head is the quickest way to make a player ill. The flat
@@ -37,17 +44,23 @@
 //! menu up the whole image on one panel in front of it, clicked with a beam
 //! from the right controller ([`pointer`]).
 //!
+//! At the table the level is drawn as the tank sees it ([`cut`]), through
+//! the game's cutaway.
+//!
 //! Recoil had no VR, so none of this rests on the original: every placement
 //! here is a presentation choice, and the constants below say which.
 
 #![cfg(not(target_os = "macos"))]
 
 mod controllers;
+mod cut;
 mod eyes;
 mod hands;
 mod hud;
 mod pointer;
+mod table;
 
+use avian3d::prelude::SpatialQuery;
 use bevy::app::PluginGroupBuilder;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::camera::RenderTarget;
@@ -71,9 +84,10 @@ use bevy_mod_openxr::spaces::OxrSpaceLocationFlags;
 use bevy_mod_xr::camera::XrCamera;
 use bevy_mod_xr::session::{XrState, XrTrackingRoot};
 use bft_game::UiCamera;
-use bft_game::aim::{ExternalAim, aim_point};
+use bft_game::aim::{AIM_FALLBACK_RANGE, ExternalAim, aim_point};
+use bft_game::cutaway::Cutaway;
 use bft_game::ui::hud::sensor::{AuxiliaryCamera, MainCamera3d, world_and_player};
-use bft_sim::vehicle::{Controlled, PlayerInput};
+use bft_sim::vehicle::{Controlled, PlayerInput, Vehicle};
 
 /// The render layer only the eye cameras see: the UI panel and the
 /// reticle, which the spectator window and the sensor must not draw.
@@ -164,10 +178,13 @@ impl Plugin for VrPlugin {
             })
             .init_resource::<ExternalAim>()
             .init_resource::<AimSource>()
+            .init_resource::<View>()
             .add_plugins((
                 controllers::ControllersPlugin,
                 pointer::PointerPlugin,
                 hands::HandsPlugin,
+                table::TablePlugin,
+                cut::CutPlugin,
             ))
             .add_systems(Startup, (spawn_panel, spawn_reticle, uncap_window))
             .add_plugins(hud::HudTilesPlugin)
@@ -373,6 +390,17 @@ fn head(eyes: &Query<&GlobalTransform, With<XrCamera>>) -> Option<Transform> {
     })
 }
 
+/// How the level is seen: from a seat riding on the main camera, or as a
+/// model on a table ([`table`]). A long press of the right stick switches.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum View {
+    /// The level as a model on a table, at a giant's scale.
+    #[default]
+    Table,
+    /// Seated at the main camera, at the level's own scale.
+    Seat,
+}
+
 /// What the turret aims with.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum AimSource {
@@ -384,19 +412,29 @@ pub(crate) enum AimSource {
 }
 
 /// Aim along the hand's beam or the gaze, as the [`AimSource`] says; along
-/// the gaze while the hand is not tracked.
+/// the gaze while the hand is not tracked. Past whatever the cutaway has
+/// cut out of the picture, to the surface the head sees ([`cut::aim_ray`]).
+#[allow(clippy::too_many_arguments)]
 fn choose_aim(
     source: Res<AimSource>,
     hand: Res<pointer::HandRay>,
     eyes: Query<&GlobalTransform, With<XrCamera>>,
     gazes: Query<(&GlobalTransform, &OxrSpaceLocationFlags), With<eyes::EyeGaze>>,
+    spatial: SpatialQuery,
+    cutaway: Res<Cutaway>,
+    hulls: Query<(Entity, &Controlled), With<Vehicle>>,
     mut aim: ResMut<ExternalAim>,
 ) {
     let hand = hand.world.filter(|_| *source == AimSource::Hand);
-    aim.0 = hand.or_else(|| {
+    let ray = hand.or_else(|| {
         let gaze = eyes::located_gaze(&gazes).or_else(|| head(&eyes))?;
         Some(Ray3d::new(gaze.translation, gaze.forward()))
     });
+    let own = hulls
+        .iter()
+        .find(|(_, controlled)| **controlled == Controlled::Local)
+        .map(|(hull, _)| hull);
+    aim.0 = ray.map(|ray| cut::aim_ray(&spatial, &cutaway, ray, own, AIM_FALLBACK_RANGE));
 }
 
 /// Put the reticle on the local player's aim point, facing the head, at a
@@ -528,23 +566,43 @@ pub(crate) fn seat_pose(camera: Transform, previous: Transform) -> Transform {
     Transform {
         translation: camera.translation,
         rotation,
-        scale: previous.scale,
+        scale: Vec3::ONE,
     }
 }
 
 /// Carry the tracking space with the main camera: its position, and its
-/// yaw about world up.
+/// yaw about world up. Only from the seat; the table places it itself.
 ///
 /// Before propagation, so the seat moves with the camera this frame rather
 /// than a frame behind it.
 pub(crate) fn follow_main_camera(
+    view: Res<View>,
     cameras: MainCameras,
     mut roots: Query<&mut Transform, With<XrTrackingRoot>>,
 ) {
+    if *view != View::Seat {
+        return;
+    }
     let Some(camera) = main_camera_pose(&cameras) else {
         return;
     };
     for mut root in &mut roots {
         *root = seat_pose(camera, *root);
+    }
+}
+
+/// Where the tracking root is this frame, as far as Update can know: from
+/// the seat, where [`follow_main_camera`] will put it after the camera's
+/// move this frame; at the table, where the grips moved the table to.
+/// `last` is the root's transform, still last frame's.
+pub(crate) fn root_pose_now(
+    view: View,
+    table: &table::Table,
+    cameras: &MainCameras,
+    last: Transform,
+) -> Transform {
+    match view {
+        View::Seat => main_camera_pose(cameras).map_or(last, |camera| seat_pose(camera, last)),
+        View::Table => table.root().unwrap_or(last),
     }
 }
