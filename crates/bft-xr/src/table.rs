@@ -13,17 +13,22 @@
 //!
 //! The table is where the player leaves it: the tank drives across it, and
 //! squeezing a grip twice quickly ([`DOUBLE_SQUEEZE`]) brings the tank back
-//! to its centre. Holding one grip drags the level with that hand; holding
+//! to its centre and turns the table so the player sits behind it, looking
+//! the way it faces, as the chase camera does; the scale stays. Holding one grip drags the level with that hand; holding
 //! both drags it with their midpoint, turns it about the vertical as the
 //! hands turn about each other and scales it as they part or close. Each
 //! grip holds the level by the world point it had under it when it closed,
 //! so the level stays under the hands.
 //!
 //! The sky dome is hidden while the table is up, since the level is now
-//! seen from outside it, and the eyes see no fog. Where the runtime blends
-//! the room in behind the picture (`ALPHA_BLEND`), the eyes clear to
-//! transparent and the table stands in the room; otherwise they clear to a
-//! dark grey ([`BACKDROP`]).
+//! seen from outside it, and the eyes see no fog. Behind the level they
+//! clear to transparent black: where the runtime blends the room in behind
+//! the picture, the table stands in the room, and otherwise the backdrop is
+//! black. The room comes in either through the `ALPHA_BLEND` mode, asked
+//! for when the runtime offers it, or by the runtime's own choice: SteamVR
+//! offers only `OPAQUE` to an app streamed to a Steam Frame from a PC, but
+//! its undocumented `camera/forceSceneAlphaBlending` setting blends the
+//! camera in wherever the picture is transparent anyway.
 //!
 //! Recoil had no VR, so every number here is a presentation choice.
 
@@ -72,10 +77,6 @@ const MAX_SCALE: f32 = 2000.0;
 /// How quickly a grip has to close again after closing to count as a
 /// double squeeze, seconds.
 const DOUBLE_SQUEEZE: f32 = 0.4;
-
-/// What the eyes clear to behind the table where the room cannot show
-/// through.
-const BACKDROP: Color = Color::srgb(0.08, 0.08, 0.09);
 
 /// The fog the eyes get while the table is up: none, by starting it
 /// further out than anything can be.
@@ -214,7 +215,7 @@ fn log_blend_modes(modes: Option<Res<OxrEnvironmentBlendModes>>) {
         if passthrough {
             "the room shows behind the table"
         } else {
-            "no passthrough, the table stands on grey"
+            "it offers no passthrough (SteamVR's camera/forceSceneAlphaBlending may blend it in regardless)"
         }
     );
 }
@@ -312,18 +313,13 @@ fn move_table(
             let Some(centre) = centre else {
                 return;
             };
-            // Turned and scaled as the player left it; the first time,
-            // facing the way the chase camera does, so the tank drives away
-            // from the player as it does in the window.
-            let (facing, scale) = match table.root {
-                Some(root) => (root.rotation, root.scale.x),
-                None => (
-                    camera
-                        .map(|camera| seat_pose(camera, Transform::default()).rotation)
-                        .unwrap_or_default(),
-                    DEFAULT_SCALE,
-                ),
-            };
+            // Behind the tank, looking the way it faces, as the chase
+            // camera rides; at the scale the player left it.
+            let facing = hull
+                .map(|(_, transform, _)| behind(transform.rotation))
+                .or(camera.map(|camera| seat_pose(camera, Transform::default()).rotation))
+                .unwrap_or_default();
+            let scale = table.root.map_or(DEFAULT_SCALE, |root| root.scale.x);
             // Any hold is let go: it held the table where it was.
             state.hold = Hold::default();
             centred(centre, facing, scale)
@@ -351,6 +347,15 @@ fn move_table(
         (Some((hand, held)), None) | (None, Some((hand, held))) => held_by_one(root, hand, held),
         (None, None) => root,
     });
+}
+
+/// The room's turn that puts the player behind a hull turned `hull`,
+/// looking along it.
+fn behind(hull: Quat) -> Quat {
+    let ahead = (hull * Vec3::NEG_Z).with_y(0.0);
+    Dir3::new(ahead).map_or(Quat::IDENTITY, |ahead| {
+        Transform::default().looking_to(ahead, Vec3::Y).rotation
+    })
 }
 
 /// The root that puts `centre` at the table's centre, the room turned to
@@ -449,7 +454,7 @@ fn look_of_view(
 ) {
     let table = *view == View::Table;
 
-    let passthrough = blend.as_mut().is_some_and(|blend| {
+    if let Some(blend) = blend.as_mut() {
         let wanted = if table {
             EnvironmentBlendMode::ALPHA_BLEND
         } else {
@@ -459,8 +464,7 @@ fn look_of_view(
             // Refused when the runtime has no such mode; then it stays.
             blend.set_blend_mode(wanted);
         }
-        blend.blend_mode() == EnvironmentBlendMode::ALPHA_BLEND
-    });
+    }
 
     for (entity, mut camera, fog, taken) in &mut eyes {
         if table {
@@ -472,8 +476,10 @@ fn look_of_view(
             {
                 fog.falloff = NO_FOG;
             }
-            let backdrop = if passthrough { Color::NONE } else { BACKDROP };
-            camera.clear_color = ClearColorConfig::Custom(backdrop);
+            // Transparent whatever the blend mode: an opaque runtime shows
+            // it black, and one that blends the room in regardless (see the
+            // module docs) shows the room.
+            camera.clear_color = ClearColorConfig::Custom(Color::NONE);
             if !taken {
                 commands.entity(entity).insert(TableLook);
             }
@@ -515,6 +521,18 @@ mod tests {
             Vec3::new(2200.0, 30.0, 1700.0)
         ));
         assert_eq!(root.scale, Vec3::splat(100.0));
+    }
+
+    #[test]
+    fn recentring_puts_the_player_behind_the_tank() {
+        let hull = Quat::from_rotation_y(1.2);
+        let root = centred(Vec3::new(10.0, 0.0, 20.0), behind(hull), 100.0);
+        // The room's forward, the way the player faces, is the hull's.
+        let room_ahead = root.rotation * Vec3::NEG_Z;
+        assert!(room_ahead.distance(hull * Vec3::NEG_Z) < 1e-5);
+        // And the head, at the room's origin, is behind the tank.
+        let head = root.transform_point(Vec3::ZERO);
+        assert!((head - Vec3::new(10.0, 0.0, 20.0)).dot(hull * Vec3::NEG_Z) < 0.0);
     }
 
     #[test]

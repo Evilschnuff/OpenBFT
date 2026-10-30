@@ -52,6 +52,7 @@
 
 #![cfg(not(target_os = "macos"))]
 
+mod assist;
 mod controllers;
 mod cut;
 mod eyes;
@@ -185,6 +186,7 @@ impl Plugin for VrPlugin {
                 hands::HandsPlugin,
                 table::TablePlugin,
                 cut::CutPlugin,
+                assist::AssistPlugin,
             ))
             .add_systems(Startup, (spawn_panel, spawn_reticle, uncap_window))
             .add_plugins(hud::HudTilesPlugin)
@@ -412,7 +414,8 @@ pub(crate) enum AimSource {
 }
 
 /// Aim along the hand's beam or the gaze, as the [`AimSource`] says; along
-/// the gaze while the hand is not tracked. Past whatever the cutaway has
+/// the gaze while the hand is not tracked. An enemy near it may then take
+/// the aim ([`assist`]). Past whatever the cutaway has
 /// cut out of the picture, to the surface the head sees ([`cut::aim_ray`]).
 #[allow(clippy::too_many_arguments)]
 fn choose_aim(
@@ -423,6 +426,7 @@ fn choose_aim(
     spatial: SpatialQuery,
     cutaway: Res<Cutaway>,
     hulls: Query<(Entity, &Controlled), With<Vehicle>>,
+    mut pointing: ResMut<assist::Pointing>,
     mut aim: ResMut<ExternalAim>,
 ) {
     let hand = hand.world.filter(|_| *source == AimSource::Hand);
@@ -434,6 +438,7 @@ fn choose_aim(
         .iter()
         .find(|(_, controlled)| **controlled == Controlled::Local)
         .map(|(hull, _)| hull);
+    pointing.0 = ray;
     aim.0 = ray.map(|ray| cut::aim_ray(&spatial, &cutaway, ray, own, AIM_FALLBACK_RANGE));
 }
 

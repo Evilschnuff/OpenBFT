@@ -43,6 +43,7 @@ use bevy_mod_xr::session::{XrSessionCreated, XrTrackingRoot, session_available};
 use bft_game::guided_view::GuidedMissile;
 use bft_sim::vehicle::{Controlled, PlayerInput};
 
+use crate::assist::AimLock;
 use crate::table::Table;
 use crate::{
     AimSource, MainCameras, PANEL_LAYER, Panel, PanelMaterial, View, ring_image, root_pose_now,
@@ -475,13 +476,14 @@ fn place_beam(
     roots: Query<&Transform, (With<XrTrackingRoot>, Without<Beam>, Without<Dot>)>,
     hand: Res<HandRay>,
     source: Res<AimSource>,
+    lock: Res<AimLock>,
     guided: Option<Res<GuidedMissile>>,
     players: Query<(&PlayerInput, &Controlled)>,
     mut beams: Query<(&mut Transform, &mut Visibility), (With<Beam>, Without<Dot>)>,
     mut dots: Query<(&mut Transform, &mut Visibility), (With<Dot>, Without<Beam>)>,
 ) {
     let shown = panel.and_then(|panel| shown_panel(&panel, &panels));
-    let ray = hand.seat.map(ray_of);
+    let mut ray = hand.seat.map(ray_of);
 
     let (end, dot) = match (shown, ray) {
         (Some(panel_pose), Some(ray)) => {
@@ -510,11 +512,21 @@ fn place_beam(
             // its drawing. The seat has no parent, so its transform is its
             // world pose.
             let seat = roots.iter().next().copied().unwrap_or_default();
-            let end = ray.zip(aim_point).map(|(ray, point)| {
-                let point = seat.compute_affine().inverse().transform_point3(point);
-                ray.get_point(ray.origin.distance(point))
-            });
-            (end, None)
+            let to_seat = seat.compute_affine().inverse();
+            // Locked on an enemy, the beam bends to it.
+            if let (Some(locked), Some(hand)) = (lock.point, ray) {
+                let end = to_seat.transform_point3(locked);
+                if let Ok(toward) = Dir3::new(end - hand.origin) {
+                    ray = Some(Ray3d::new(hand.origin, toward));
+                }
+                (Some(end), None)
+            } else {
+                let end = ray.zip(aim_point).map(|(ray, point)| {
+                    let point = to_seat.transform_point3(point);
+                    ray.get_point(ray.origin.distance(point))
+                });
+                (end, None)
+            }
         }
         _ => (None, None),
     };

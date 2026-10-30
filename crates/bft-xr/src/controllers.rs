@@ -37,7 +37,7 @@
 //! the player sees it: pushed away is where they look, pushed right is to
 //! the right of that, whichever way the tank faces. The tank turns toward
 //! that direction and drives along it once it roughly faces it, or backs
-//! along it when its rear is the nearer end ([`drive_toward`]), as an
+//! along it when it lies nearly behind ([`drive_toward`]), as an
 //! [`ExternalDrive`]. Where they look is the
 //! head's heading ([`head_heading`]), which holds when they look steeply
 //! down at the table.
@@ -112,10 +112,16 @@ const STEER_FULL: f32 = 0.5;
 /// throttle opens as it comes round.
 const DRIVE_CONE: f32 = std::f32::consts::FRAC_PI_3;
 
-/// How far past square to the stick's direction the hull has to be before
-/// it switches between driving forward and backing toward it, radians, so
-/// a stick held near square does not flip it to and fro.
-const REVERSE_HYSTERESIS: f32 = 0.2;
+/// How far off straight behind the stick's direction can be for the hull
+/// to back toward it, radians: 60° either side, so backing covers 120°
+/// behind and driving forward the rest. Forward is how the game is driven;
+/// backing is for a direction nearly behind.
+const REVERSE_CONE: f32 = std::f32::consts::FRAC_PI_3;
+
+/// How far the stick's direction has to move past the edge of the
+/// [`REVERSE_CONE`] before the hull switches ends, radians, so a stick held
+/// on the edge does not flip it to and fro.
+const REVERSE_HYSTERESIS: f32 = 0.15;
 
 /// How long the right stick's click is held in to switch between the table
 /// and the seat instead of switching the aim, seconds.
@@ -525,11 +531,12 @@ fn head_heading(head: Transform) -> Quat {
 }
 
 /// Throttle and steering for the left stick at `stick`, seen facing
-/// `heading` in the world, driving a hull turned `hull`: turn whichever end
-/// of the hull is nearer toward the direction the stick points, and drive
-/// that end first along it, as fast as the stick is pushed, once it is
-/// within [`DRIVE_CONE`] of it. `reversing` is which end it was last time,
-/// and changes only [`REVERSE_HYSTERESIS`] past square.
+/// `heading` in the world, driving a hull turned `hull`: turn the hull's
+/// front toward the direction the stick points, or its rear when that
+/// direction is within [`REVERSE_CONE`] of straight behind, and drive that
+/// end first along it, as fast as the stick is pushed, once it is within
+/// [`DRIVE_CONE`] of it. `reversing` is which end it was
+/// last time, and changes only [`REVERSE_HYSTERESIS`] past that edge.
 fn drive_toward(stick: Vec2, heading: Quat, hull: Quat, reversing: &mut bool) -> (f32, f32) {
     let push = ((stick.length() - DRIVE_DEAD_ZONE) / (1.0 - DRIVE_DEAD_ZONE)).clamp(0.0, 1.0);
     if push <= 0.0 {
@@ -545,11 +552,11 @@ fn drive_toward(stick: Vec2, heading: Quat, hull: Quat, reversing: &mut bool) ->
     // the left. Seen from above, the x–z plane is mirrored against `Vec2`'s
     // own (z points toward the viewer), hence the sign.
     let off = -facing.angle_to(wanted);
-    let square = std::f32::consts::FRAC_PI_2;
+    let edge = std::f32::consts::PI - REVERSE_CONE;
     *reversing = if *reversing {
-        off.abs() > square - REVERSE_HYSTERESIS
+        off.abs() > edge - REVERSE_HYSTERESIS
     } else {
-        off.abs() > square + REVERSE_HYSTERESIS
+        off.abs() > edge + REVERSE_HYSTERESIS
     };
     // Backing, it is the rear that turns toward the stick; the hull turns
     // the same way for the same steering whichever way it drives.
@@ -720,13 +727,25 @@ mod tests {
         assert!(throttle < 0.0, "{throttle}");
         assert!(steer < 0.0, "{steer}");
 
-        // Square across: stays backing until well past square...
-        let just_past = room * Quat::from_rotation_y(0.1);
-        drive_toward(Vec2::X, room, just_past, &mut reversing);
+        // A stick `degrees` round to the right of where the hull faces.
+        let round = |degrees: f32| {
+            let angle = degrees.to_radians();
+            Vec2::new(angle.sin(), angle.cos())
+        };
+        // Backing, it keeps backing a little past the cone's edge (120°)...
+        drive_toward(round(115.0), room, room, &mut reversing);
         assert!(reversing);
-        // ...and a stick pushed ahead brings it forward again.
-        drive_toward(Vec2::Y, room, room, &mut reversing);
+        // ...and drives forward toward anything nearer the front.
+        let (throttle, _) = drive_toward(round(100.0), room, room, &mut reversing);
         assert!(!reversing);
+        assert!(throttle >= 0.0);
+        // Going forward, it turns round rather than back a little past
+        // the edge...
+        drive_toward(round(125.0), room, room, &mut reversing);
+        assert!(!reversing);
+        // ...and backs once well inside the cone.
+        drive_toward(round(135.0), room, room, &mut reversing);
+        assert!(reversing);
     }
 
     #[test]

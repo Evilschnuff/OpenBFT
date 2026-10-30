@@ -10,9 +10,10 @@
 //! what the tank sees is drawn as it is, what stands between the head and
 //! the space the tank sees is cut (a tunnel's roof, the wall on the near
 //! side, a hill in front of a valley), ground seen before is darkened
-//! ([`Explored`]) and the rest is not drawn. The tank's own meshes are
-//! tagged to keep; other vehicles and pickups to show only while the tank
-//! sees them. Only the eyes' views are cut, being the ones scaled up; the
+//! ([`Explored`]) and the rest darker still, so the side of a crate the
+//! tank cannot see is dark rather than a window into it. The tank's own
+//! meshes are tagged to keep; other vehicles, pickups and shots to show
+//! only while the tank sees them. Only the eyes' views are cut, being the ones scaled up; the
 //! window keeps the whole level.
 //!
 //! The laser goes through what is not drawn and lands on what the head
@@ -27,22 +28,23 @@ use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
 use bevy_mod_xr::camera::XrCamera;
-use bft_game::cutaway::{Cutaway, Explored, KEEP, Sight, WHEN_SEEN};
+use bft_game::cutaway::{Cutaway, Explored, KEEP, Sight, when_seen};
 use bft_sim::level::{GameLayer, WorldEnv};
 use bft_sim::pickups::Pickup;
 use bft_sim::vehicle::{Controlled, Vehicle, VehicleTable};
+use bft_sim::weapons::Projectile;
 
 use crate::View;
 
 /// Directions round the horizon the tank looks in.
-const AZIMUTHS: u32 = 128;
+const AZIMUTHS: u32 = 256;
 
 /// Directions from straight down to straight up.
 const ELEVATIONS: u32 = 32;
 
 /// Frames one look round is spread over: the rays are a frame's work
 /// otherwise.
-const SWEEP_FRAMES: u32 = 4;
+const SWEEP_FRAMES: u32 = 6;
 
 /// How far the tank sees where the level gives no fog, metres.
 const FALLBACK_REACH: f32 = 600.0;
@@ -71,7 +73,28 @@ const GROUND_HIGH: f32 = 0.1;
 const MIN_VIEW_SCALE: f32 = 2.0;
 
 /// How bright ground seen before but not now is drawn.
-const EXPLORED_SHADE: f32 = 0.2;
+const EXPLORED_SHADE: f32 = 0.5;
+
+/// How bright what the tank has never seen is drawn.
+const UNSEEN_SHADE: f32 = 0.25;
+
+/// How far over a vehicle's origin its middle is, metres: vehicles stand
+/// on their origins.
+pub(crate) const VEHICLE_LIFT: f32 = 1.5;
+
+/// How far past a wall's edge the middle of a vehicle may be and still be
+/// seen, metres: about half a vehicle.
+pub(crate) const VEHICLE_MARGIN: f32 = 3.0;
+
+/// Other vehicles: shown while the tank sees their middle.
+const VEHICLE_TAG: u32 = when_seen(VEHICLE_LIFT, VEHICLE_MARGIN);
+
+/// Pickups: shown while the tank sees just over their origin, with little
+/// slack, so one inside a crate stays hidden until the crate is broken.
+const PICKUP_TAG: u32 = when_seen(0.5, 0.5);
+
+/// Shots: shown while the tank sees where they are, with a little slack.
+const SHOT_TAG: u32 = when_seen(0.0, 2.0);
 
 /// How many surfaces the laser goes through before it gives up: cut ones,
 /// and the backs of ones it has gone into.
@@ -266,17 +289,19 @@ fn place_cut(
     if let Some(head) = head.filter(|_| enabled) {
         cutaway.min_view_scale = MIN_VIEW_SCALE;
         cutaway.explored_shade = EXPLORED_SHADE;
+        cutaway.unseen_shade = UNSEEN_SHADE;
         cutaway.eye = head.translation;
     }
 }
 
-/// Tag the local tank's meshes to keep, and other vehicles' and pickups'
-/// to show only while seen, as their parts arrive.
+/// Tag the local tank's meshes to keep, and other vehicles', pickups' and
+/// shots' to show only while seen, as their parts arrive.
 #[allow(clippy::type_complexity)]
 fn tag_meshes(
     mut commands: Commands,
     vehicles: Query<(Entity, &Controlled), With<Vehicle>>,
     pickups: Query<Entity, With<Pickup>>,
+    shots: Query<Entity, With<Projectile>>,
     children: Query<&Children>,
     meshes: Query<Option<&MeshTag>, With<Mesh3d>>,
 ) {
@@ -286,11 +311,12 @@ fn tag_meshes(
             let tag = if *controlled == Controlled::Local {
                 KEEP
             } else {
-                WHEN_SEEN
+                VEHICLE_TAG
             };
             (entity, tag)
         })
-        .chain(pickups.iter().map(|entity| (entity, WHEN_SEEN)));
+        .chain(pickups.iter().map(|entity| (entity, PICKUP_TAG)))
+        .chain(shots.iter().map(|entity| (entity, SHOT_TAG)));
     for (root, wanted) in roots {
         for entity in std::iter::once(root).chain(children.iter_descendants(root)) {
             if let Ok(tag) = meshes.get(entity)
