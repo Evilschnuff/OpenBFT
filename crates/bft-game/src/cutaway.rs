@@ -8,27 +8,32 @@
 //! [`Sight`], what a viewpoint (a tank's turret) sees all round it, and an
 //! [`Explored`] map of the ground it has seen before:
 //!
-//! - a surface the viewpoint **sees** (it faces the viewpoint, and nothing
-//!   nearer in its direction hides it) is drawn as it is, fading toward
-//!   remembered as it turns away or goes out of sight, so the edge of what
-//!   is seen is soft;
+//! - a surface the viewpoint **sees** (it faces the viewpoint, or is turned
+//!   only a little away, and nothing nearer in its direction hides it) is
+//!   drawn as it is, fading toward unseen as it turns away or goes out of
+//!   sight, so the edge of what is seen is soft;
 //! - one that is not seen but **hides** space the viewpoint sees from the
 //!   [`eye`](Cutaway::eye) is cut: the roof over a tunnel and the wall on
 //!   the eye's side of it, the far side of a hill in front of a valley.
 //!   Which space it sees is kept as [`OpenColumns`], the heights it sees
 //!   over each patch of ground, so the shader tries a point behind a
-//!   surface with a single read;
-//! - one on ground seen before is drawn darkened
-//!   ([`explored_shade`](Cutaway::explored_shade));
-//! - anything else, and anything further across the ground than the
-//!   sight's [`reach`](Sight::reach), is not drawn. The edge between drawn
-//!   and not is dissolved in a fine grain fixed to the world (in the shader;
-//!   [`Cutaway::cuts`] takes it halfway), not a line along the grids' cells.
+//!   surface with a single read, and confirms one that reads open against
+//!   the sight's own depths ([`Sight::reaches`]): a column also holds the
+//!   air beside a crate, but the sight stops at the crate;
+//! - any other surface is drawn darkened and greyed: on ground seen before
+//!   to [`explored_shade`](Cutaway::explored_shade), elsewhere to the darker
+//!   [`unseen_shade`](Cutaway::unseen_shade), so the side of a crate the
+//!   viewpoint cannot see is a dark side, not a window onto what is inside;
+//! - anything further across the ground than the sight's
+//!   [`reach`](Sight::reach) is not drawn, its edge dissolved in a fine
+//!   grain fixed to the world (in the shader; [`Cutaway::cuts`] takes it
+//!   halfway) rather than a hard line.
 //!
 //! A mesh tagged [`KEEP`] (Bevy's `MeshTag`) is always drawn as it is (the
-//! viewpoint's own vehicle); one tagged [`WHEN_SEEN`] is drawn only while
-//! the viewpoint sees the middle of its body ([`Sight::sees_body`]: other
-//! vehicles, pickups), so memory does not give away where they are.
+//! viewpoint's own vehicle). One tagged [`when_seen`] is drawn as it is
+//! while the viewpoint sees a point over its origin, and not at all
+//! otherwise ([`Sight::sees_body`]): other vehicles, pickups and shots, so
+//! memory does not give away where they are.
 //!
 //! It applies only to views drawn at [`min_view_scale`](Cutaway::min_view_scale)
 //! or more, a camera whose transform is scaled up as when a level is shown
@@ -55,8 +60,28 @@ pub type ModelMaterial = ExtendedMaterial<StandardMaterial, CutawayExtension>;
 /// The `MeshTag` of a mesh always drawn as it is.
 pub const KEEP: u32 = 1;
 
-/// The `MeshTag` of a mesh drawn only while the sight sees its origin.
+/// The low byte of a [`when_seen`] tag.
 pub const WHEN_SEEN: u32 = 2;
+
+/// The `MeshTag` of a mesh drawn only while the sight sees the point `lift`
+/// metres over its origin, at most `margin` metres past the first surface
+/// in that direction ([`Sight::sees_body`]). Both are kept to a tenth of a
+/// metre, up to 25.5 m.
+pub const fn when_seen(lift: f32, margin: f32) -> u32 {
+    WHEN_SEEN | (tenths(lift) << 8) | (tenths(margin) << 16)
+}
+
+/// `metres` in tenths, rounded, held to a byte.
+const fn tenths(metres: f32) -> u32 {
+    let tenths = metres * 10.0 + 0.5;
+    if tenths <= 0.0 {
+        0
+    } else if tenths >= 255.0 {
+        255
+    } else {
+        tenths as u32
+    }
+}
 
 /// The most directions a [`Sight`] holds: its azimuths times its
 /// elevations. The buffer is this size whatever the sight's, so it never
@@ -81,25 +106,26 @@ const SEEN_SOFT: f32 = 3.0;
 /// ...and as a share of the depth.
 const SEEN_SOFT_SHARE: f32 = 0.05;
 
-/// How far a surface turns toward the viewpoint, as the cosine of the
-/// angle off edge-on, before it is fully seen.
-const FACING_SOFT: f32 = 0.15;
+/// How far a surface may turn away from the viewpoint and still be seen a
+/// little, as the cosine of the angle off edge-on: the level's terrain is
+/// large flat facets, and judged strictly a slope comes out a patchwork of
+/// seen and unseen triangles.
+const FACING_AWAY: f32 = -0.3;
+
+/// How far it turns toward the viewpoint before it is fully seen.
+const FACING_TOWARD: f32 = 0.2;
 
 /// The share of the reach over which the level fades out at its edge.
 const EDGE_FADE: f32 = 0.08;
 
-/// How far over a [`WHEN_SEEN`] mesh's origin the middle of its body is,
-/// metres: vehicles and pickups stand on their origins.
-const BODY_LIFT: f32 = 1.5;
-
-/// How far past the depth the middle of a body may be and still be seen,
-/// metres: about half a vehicle, so one beside a wall is not lost behind
-/// the wall's edge.
-const BODY_MARGIN: f32 = 3.0;
-
 /// How far short of the depth space counts as open, metres: not the
 /// surface itself.
 const OPEN_MARGIN: f32 = 0.3;
+
+/// How far past the sight's depth a point found open in its column still
+/// counts as seen space, metres: a little into the wall it met, so a
+/// tunnel is cut out to its walls, not as far as the inside of a crate.
+const REACH_SLACK: f32 = 1.0;
 
 /// How many points behind a surface are tried for open space.
 const HIDE_STEPS: u32 = 8;
@@ -149,6 +175,8 @@ pub struct Cutaway {
     pub explored: Explored,
     /// How bright ground seen before but not now is drawn, 0–1.
     pub explored_shade: f32,
+    /// How bright what has never been seen is drawn, 0–1.
+    pub unseen_shade: f32,
 }
 
 impl Default for Cutaway {
@@ -159,7 +187,8 @@ impl Default for Cutaway {
             eye: Vec3::ZERO,
             sight: Sight::default(),
             explored: Explored::default(),
-            explored_shade: 0.35,
+            explored_shade: 0.5,
+            unseen_shade: 0.25,
         }
     }
 }
@@ -285,7 +314,7 @@ impl Sight {
         if distance > self.reach || distance <= f32::EPSILON {
             return 0.0;
         }
-        let facing = smoothstep(0.0, FACING_SOFT, normal.dot(-offset / distance));
+        let facing = smoothstep(FACING_AWAY, FACING_TOWARD, normal.dot(-offset / distance));
         let depth = self.depth_towards(offset);
         let start = depth + SEEN_MARGIN + depth * SEEN_MARGIN_SHARE;
         let end = start + SEEN_SOFT + depth * SEEN_SOFT_SHARE;
@@ -298,12 +327,23 @@ impl Sight {
         self.seen(point, normal) >= 0.5
     }
 
-    /// Whether the viewpoint sees the body of something standing at
-    /// `origin`: the middle of it, over the origin.
-    pub fn sees_body(&self, origin: Vec3) -> bool {
-        let offset = origin + Vec3::Y * BODY_LIFT - self.origin;
+    /// Whether the viewpoint's sight reaches `point`: no further than
+    /// [`REACH_SLACK`] past the first surface in its direction.
+    pub fn reaches(&self, point: Vec3) -> bool {
+        let offset = point - self.origin;
         let distance = offset.length();
-        distance <= self.reach && distance <= self.depth_towards(offset) + BODY_MARGIN
+        distance <= self.reach && distance <= self.depth_towards(offset) + REACH_SLACK
+    }
+
+    /// Whether the viewpoint sees the body of something at `origin`: the
+    /// point `lift` over it, no further than `margin` past the first surface
+    /// in its direction. A vehicle's middle is over its origin, and half of
+    /// it may stand past a wall's edge and still be seen; a pickup in a
+    /// crate is just past the crate's side.
+    pub fn sees_body(&self, origin: Vec3, lift: f32, margin: f32) -> bool {
+        let offset = origin + Vec3::Y * lift - self.origin;
+        let distance = offset.length();
+        distance <= self.reach && distance <= self.depth_towards(offset) + margin
     }
 }
 
@@ -487,14 +527,15 @@ impl Explored {
     }
 
     /// How much of the ground round `point` (x and z) has been seen, 0–1,
-    /// blended between the four nearest cells' middles.
+    /// blended between the four nearest cells' middles, eased so the blend
+    /// shows no creases along the cells.
     pub fn amount(&self, point: Vec2) -> f32 {
         if self.cell <= 0.0 {
             return 0.0;
         }
         let at = (point - self.corner) / self.cell - 0.5;
         let corner = at.floor();
-        let between = at - corner;
+        let between = (at - corner).map(|t| t * t * (3.0 - 2.0 * t));
         let seen = |dx: f32, dz: f32| {
             let middle = self.corner + (corner + Vec2::new(dx, dz) + 0.5) * self.cell;
             if self.is_explored(middle) { 1.0 } else { 0.0 }
@@ -531,12 +572,8 @@ impl Cutaway {
         if sight.is_empty() {
             return edge < 0.5;
         }
-        let seen = sight.seen(point, normal);
-        // The shader dissolves what is half drawn; this takes it at half.
-        if seen.max(self.explored.amount(point.xz())) * edge < 0.5 {
-            return true;
-        }
-        seen < 0.5 && self.hides_sight(point)
+        // The shader dissolves the edge; this takes it at half.
+        edge < 0.5 || (sight.seen(point, normal) < 0.5 && self.hides_sight(point))
     }
 
     /// Whether `point` stands in front of open space the viewpoint sees, as
@@ -556,9 +593,10 @@ impl Cutaway {
         length > 0.0
             && (1..=HIDE_STEPS).any(|step| {
                 let along = step as f32 / HIDE_STEPS as f32;
-                self.sight
-                    .columns
-                    .is_open(point + away * (length * along * along))
+                let behind = point + away * (length * along * along);
+                // The column first, a single read; the sight's own depths
+                // only for a point it says is open.
+                self.sight.columns.is_open(behind) && self.sight.reaches(behind)
             })
     }
 
@@ -576,7 +614,12 @@ impl Cutaway {
         floats(&mut bytes, sight.origin.extend(sight.reach).to_array());
         floats(
             &mut bytes,
-            [self.min_view_scale, self.explored_shade, 0.0, 0.0],
+            [
+                self.min_view_scale,
+                self.explored_shade,
+                self.unseen_shade,
+                0.0,
+            ],
         );
         // No directions reads as no sight at all.
         let azimuths = if sight.is_empty() { 0 } else { sight.azimuths };
@@ -739,7 +782,7 @@ mod tests {
             eye: Vec3::new(50.0, 55.0, 10.0),
             sight: tunnel(),
             explored: Explored::covering(Vec2::splat(-500.0), Vec2::splat(500.0)),
-            explored_shade: 0.35,
+            ..default()
         }
     }
 
@@ -761,19 +804,58 @@ mod tests {
     }
 
     #[test]
-    fn ground_beyond_the_far_wall_is_not_drawn_until_explored() {
+    fn ground_beyond_the_far_wall_is_drawn_dark_not_cut() {
         let mut cutaway = cutaway();
         let beyond = Vec3::new(-30.0, 0.0, 0.0);
-        assert!(cutaway.cuts(beyond, Vec3::Y));
-        // The ground round it, as a look round marks it.
-        let cell = cutaway.explored.cell;
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                let near = beyond.xz() + Vec2::new(dx as f32, dz as f32) * cell;
-                cutaway.explored.mark(near);
+        assert!(!cutaway.sight.sees(beyond, Vec3::Y));
+        assert!(!cutaway.cuts(beyond, Vec3::Y));
+        cutaway.explored.mark(beyond.xz());
+        assert!(!cutaway.cuts(beyond, Vec3::Y));
+    }
+
+    /// A crate 2 m on a side on flat ground at x = 8…10, seen from 4 m up at
+    /// the origin, with the depths cast against it and the ground.
+    fn crate_sight() -> Sight {
+        let mut sight = Sight::open(Vec3::new(0.0, 4.0, 0.0), 400.0, 256, 32);
+        let (low, high) = (Vec3::new(8.0, 0.0, -1.0), Vec3::new(10.0, 2.0, 1.0));
+        for row in 0..sight.elevations {
+            for column in 0..sight.azimuths {
+                let direction = sight.direction(column, row);
+                let mut depth = sight.reach;
+                if direction.y < 0.0 {
+                    depth = depth.min(4.0 / -direction.y);
+                }
+                // Slab test against the crate.
+                let inverse = direction.recip();
+                let near = (low - sight.origin) * inverse;
+                let far = (high - sight.origin) * inverse;
+                let enter = near.min(far).max_element();
+                let leave = near.max(far).min_element();
+                if enter <= leave && enter > 0.0 {
+                    depth = depth.min(enter);
+                }
+                sight.record(column, row, depth);
             }
         }
-        assert!(!cutaway.cuts(beyond, Vec3::Y));
+        sight.columns.widen(1);
+        sight
+    }
+
+    #[test]
+    fn a_crates_far_side_is_dark_not_cut() {
+        let cutaway = Cutaway {
+            enabled: true,
+            eye: Vec3::new(40.0, 30.0, 0.0),
+            sight: crate_sight(),
+            ..default()
+        };
+        // The side away from the tank, toward the eye, and the top.
+        let side = Vec3::new(10.0, 1.0, 0.0);
+        assert!(!cutaway.sight.sees(side, Vec3::X));
+        assert!(!cutaway.cuts(side, Vec3::X));
+        assert!(!cutaway.cuts(Vec3::new(9.5, 2.0, 0.5), Vec3::Y));
+        // The side toward the tank is seen.
+        assert!(cutaway.sight.sees(Vec3::new(8.0, 1.0, 0.0), Vec3::NEG_X));
     }
 
     #[test]
@@ -816,6 +898,15 @@ mod tests {
     }
 
     #[test]
+    fn a_when_seen_tag_carries_its_lift_and_margin() {
+        let tag = when_seen(1.5, 3.0);
+        assert_eq!(tag & 0xff, WHEN_SEEN);
+        assert_eq!((tag >> 8) & 0xff, 15);
+        assert_eq!((tag >> 16) & 0xff, 30);
+        assert_eq!((when_seen(-1.0, 100.0) >> 8) & 0xffff, 255 << 8);
+    }
+
+    #[test]
     fn the_buffers_are_always_the_same_size() {
         let empty = Cutaway::default();
         assert_eq!(empty.header_bytes().len(), HEADER_BYTES);
@@ -840,8 +931,12 @@ mod tests {
     #[test]
     fn a_body_beside_the_tank_is_seen_and_one_behind_a_wall_is_not() {
         let sight = tunnel();
-        assert!(sight.sees_body(Vec3::new(0.0, 0.0, 40.0)));
-        assert!(!sight.sees_body(Vec3::new(-30.0, 0.0, 0.0)));
+        assert!(sight.sees_body(Vec3::new(0.0, 0.0, 40.0), 1.5, 3.0));
+        assert!(!sight.sees_body(Vec3::new(-30.0, 0.0, 0.0), 1.5, 3.0));
+        // Just inside the wall, as a pickup in a crate is: seen only with
+        // the slack a vehicle gets.
+        assert!(sight.sees_body(Vec3::new(-6.0, 1.0, 0.0), 0.5, 3.0));
+        assert!(!sight.sees_body(Vec3::new(-6.0, 1.0, 0.0), 0.5, 0.5));
     }
 
     #[test]
@@ -849,8 +944,8 @@ mod tests {
         let sight = tunnel();
         let wall = sight.seen(Vec3::new(-5.0, 3.0, 2.0), Vec3::X);
         assert!(wall > 0.99, "{wall}");
-        // Edge-on, half turned, and well behind the wall.
-        assert_eq!(sight.seen(Vec3::new(-5.0, 3.0, 2.0), Vec3::Z), 0.0);
+        // Turned away, and well behind the wall.
+        assert_eq!(sight.seen(Vec3::new(-5.0, 3.0, 2.0), Vec3::NEG_X), 0.0);
         // Turned almost edge-on to the viewpoint.
         let floor = Vec3::new(1.0, 0.0, 6.0);
         let toward = (sight.origin - floor).normalize();

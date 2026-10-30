@@ -38,7 +38,7 @@ struct Cutaway {
     eye: vec4<f32>,
     // The sight's origin; w its reach.
     origin: vec4<f32>,
-    // Smallest view scale, explored shade.
+    // Smallest view scale, explored shade, unseen shade.
     shade: vec4<f32>,
     // Azimuths (0: no sight), elevations, explored columns, rows.
     counts: vec4<u32>,
@@ -60,7 +60,7 @@ struct CutawayData {
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<storage, read> cutaway: Cutaway;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<storage, read> data: CutawayData;
 
-// `cutaway::KEEP`, `cutaway::WHEN_SEEN`.
+// `cutaway::KEEP`, and the low byte of `cutaway::when_seen`.
 const KEEP: u32 = 1u;
 const WHEN_SEEN: u32 = 2u;
 
@@ -69,10 +69,10 @@ const SEEN_MARGIN: f32 = 1.5;
 const SEEN_MARGIN_SHARE: f32 = 0.03;
 const SEEN_SOFT: f32 = 3.0;
 const SEEN_SOFT_SHARE: f32 = 0.05;
-const FACING_SOFT: f32 = 0.15;
+const FACING_AWAY: f32 = -0.3;
+const FACING_TOWARD: f32 = 0.2;
 const EDGE_FADE: f32 = 0.08;
-const BODY_LIFT: f32 = 1.5;
-const BODY_MARGIN: f32 = 3.0;
+const REACH_SLACK: f32 = 1.0;
 // The grain the edge of what is drawn dissolves in, metres of the level.
 const GRAIN: f32 = 0.5;
 const HIDE_STEPS: u32 = 8u;
@@ -119,18 +119,25 @@ fn seen(point: vec3<f32>, normal: vec3<f32>) -> f32 {
     if distance > cutaway.origin.w || distance <= 1e-6 {
         return 0.0;
     }
-    let facing = smoothstep(0.0, FACING_SOFT, dot(normal, -offset / distance));
+    let facing = smoothstep(FACING_AWAY, FACING_TOWARD, dot(normal, -offset / distance));
     let depth = depth_towards(offset);
     let start = depth + SEEN_MARGIN + depth * SEEN_MARGIN_SHARE;
     let end = start + SEEN_SOFT + depth * SEEN_SOFT_SHARE;
     return facing * (1.0 - smoothstep(start, end, distance));
 }
 
-// `Sight::sees_body`.
-fn sees_body(origin: vec3<f32>) -> bool {
-    let offset = origin + vec3(0.0, BODY_LIFT, 0.0) - cutaway.origin.xyz;
+// `Sight::reaches`.
+fn reaches(point: vec3<f32>) -> bool {
+    let offset = point - cutaway.origin.xyz;
     let distance = length(offset);
-    return distance <= cutaway.origin.w && distance <= depth_towards(offset) + BODY_MARGIN;
+    return distance <= cutaway.origin.w && distance <= depth_towards(offset) + REACH_SLACK;
+}
+
+// `Sight::sees_body`.
+fn sees_body(origin: vec3<f32>, lift: f32, margin: f32) -> bool {
+    let offset = origin + vec3(0.0, lift, 0.0) - cutaway.origin.xyz;
+    let distance = length(offset);
+    return distance <= cutaway.origin.w && distance <= depth_towards(offset) + margin;
 }
 
 // `Explored::amount`.
@@ -141,7 +148,7 @@ fn explored_amount(point: vec2<f32>) -> f32 {
     }
     let at = (point - cutaway.grid.xy) / cell - 0.5;
     let corner = floor(at);
-    let between = at - corner;
+    let between = smoothstep(vec2(0.0), vec2(1.0), at - corner);
     let middle = cutaway.grid.xy + (corner + 0.5) * cell;
     let low = mix(
         f32(is_explored(middle)),
@@ -214,43 +221,50 @@ fn hides_sight(point: vec3<f32>) -> bool {
     }
     for (var index = 1u; index <= HIDE_STEPS; index++) {
         let along = f32(index) / f32(HIDE_STEPS);
-        if is_open_column(point + away * (span * along * along)) {
+        let behind = point + away * (span * along * along);
+        // The column first, a single read; the sight's own depths only for
+        // a point it says is open.
+        if is_open_column(behind) && reaches(behind) {
             return true;
         }
     }
     return false;
 }
 
-// `Cutaway::cuts`, for this view and mesh: how much the fragment is seen,
-// 1 drawn as it is down to 0 drawn as remembered, or CUT.
-fn judge(world: vec3<f32>, normal: vec3<f32>, tag: u32, instance: u32) -> f32 {
+// `Cutaway::cuts`, for this view and mesh: x how much the fragment is seen,
+// 1 drawn as it is down to 0 drawn dark, or CUT; y how bright dark is.
+fn judge(world: vec3<f32>, normal: vec3<f32>, tag: u32, instance: u32) -> vec2<f32> {
+    let whole = vec2(1.0, 1.0);
     if cutaway.eye.w == 0.0 || tag == KEEP {
-        return 1.0;
+        return whole;
     }
     if length(view.world_from_view[0].xyz) < cutaway.shade.x {
-        return 1.0;
+        return whole;
     }
     let origin = cutaway.origin.xyz;
     let reach = cutaway.origin.w;
     let edge = 1.0 - smoothstep(reach * (1.0 - EDGE_FADE), reach, length(world.xz - origin.xz));
     let threshold = grain(world);
-    if cutaway.counts.x == 0u {
-        return select(CUT, 1.0, edge > threshold);
+    // The edge dissolves: drawn where the grain is under how far in it is,
+    // a soft scatter rather than a line.
+    if edge <= threshold {
+        return vec2(CUT, 0.0);
     }
-    if tag == WHEN_SEEN {
+    if cutaway.counts.x == 0u {
+        return whole;
+    }
+    if (tag & 0xffu) == WHEN_SEEN {
         let body = get_world_from_local(instance)[3].xyz;
-        return select(CUT, 1.0, edge > 0.0 && sees_body(body));
+        let lift = f32((tag >> 8u) & 0xffu) / 10.0;
+        let margin = f32((tag >> 16u) & 0xffu) / 10.0;
+        return select(vec2(CUT, 0.0), whole, sees_body(body, lift, margin));
     }
     let amount = seen(world, normal);
-    // Half drawn dissolves: drawn where the grain is under how much is
-    // drawn, so an edge is a soft scatter rather than a line of cells.
-    if max(amount, explored_amount(world.xz)) * edge <= threshold {
-        return CUT;
-    }
     if amount < 0.5 && hides_sight(world) {
-        return CUT;
+        return vec2(CUT, 0.0);
     }
-    return amount;
+    let dark = mix(cutaway.shade.z, cutaway.shade.y, explored_amount(world.xz));
+    return vec2(amount, dark);
 }
 
 @fragment
@@ -266,7 +280,7 @@ fn fragment(
         get_tag(in.instance_index),
         in.instance_index,
     );
-    if judged < 0.0 {
+    if judged.x < 0.0 {
         discard;
     }
 
@@ -286,11 +300,12 @@ fn fragment(
     } else {
         out.color = pbr_input.material.base_color;
     }
-    if judged < 1.0 {
-        // Remembered, as far as it is not seen: greyed and dimmed.
+    if judged.x < 1.0 {
+        // As far as it is not seen: greyed and dimmed, less where it is
+        // remembered.
         let grey = dot(out.color.rgb, vec3(0.2126, 0.7152, 0.0722));
-        let remembered = mix(vec3(grey), out.color.rgb, 0.4) * cutaway.shade.y;
-        out.color = vec4(mix(remembered, out.color.rgb, judged), out.color.a);
+        let dark = mix(vec3(grey), out.color.rgb, 0.4) * judged.y;
+        out.color = vec4(mix(dark, out.color.rgb, judged.x), out.color.a);
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
 #endif
