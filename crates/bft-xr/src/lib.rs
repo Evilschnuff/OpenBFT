@@ -6,13 +6,23 @@
 //! Only `bft-bin` depends on this crate, behind its `vr` feature, and uses
 //! it only for `play --vr` and `view --vr`; nothing in `bft-sim`,
 //! `bft-assets` or `bft-game` names it (DESIGN §10). What it takes from
-//! `bft-game` are four hooks that know nothing of VR:
-//! [`AuxiliaryCamera`] keeps the eye cameras out of "the" main camera,
-//! [`ExternalAim`] lets the gaze aim instead of the cursor,
-//! [`ExternalActions`](bft_game::ui::ExternalActions) lets the controllers
-//! press actions, and [`UiCamera`] is the UI camera to retarget. With no OpenXR runtime
-//! answering, [`with_xr`] falls back to the flat renderer and [`VrPlugin`]
-//! adds nothing, so a `--vr` run is then the flat game.
+//! `bft-game` are general hooks that know nothing of VR:
+//!
+//! - [`AuxiliaryCamera`] keeps the eye cameras out of "the" main camera;
+//! - [`ExternalAim`] lets the hand's beam or the gaze aim instead of the
+//!   cursor;
+//! - [`ExternalActions`](bft_game::ui::ExternalActions) lets the
+//!   controllers press actions;
+//! - [`ExternalGuide`](bft_game::guided_view::ExternalGuide) lets a stick
+//!   steer a guided missile;
+//! - [`ExternalDrive`](bft_game::input_map::ExternalDrive) adds analog
+//!   throttle and steering;
+//! - [`Cutaway`] draws the level as one viewpoint in it sees it;
+//! - [`UiCamera`] is the UI camera to retarget.
+//!
+//! With no OpenXR runtime answering, [`with_xr`] falls back to the flat
+//! renderer and [`VrPlugin`] adds nothing, so a `--vr` run is then the flat
+//! game.
 //!
 //! # Two views
 //!
@@ -39,8 +49,8 @@
 //! fallback while the controller is not tracked. The controllers press the game's actions ([`controllers`]):
 //! drive on the left stick, fire on the right trigger. The UI (HUD, menus,
 //! dialogs) draws into an image that only the eyes see: in play the HUD's
-//! clusters each on their own tile, the bottom row's riding on the
-//! controllers ([`hud`]), and with a
+//! clusters each on their own tile, riding on the controllers ([`hud`]),
+//! and with a
 //! menu up the whole image on one panel in front of it, clicked with a beam
 //! from the right controller ([`pointer`]).
 //!
