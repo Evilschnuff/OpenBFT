@@ -38,7 +38,7 @@ struct Cutaway {
     eye: vec4<f32>,
     // The sight's origin; w its reach.
     origin: vec4<f32>,
-    // Smallest view scale, explored shade, unseen shade.
+    // Smallest view scale, explored shade, unseen shade, the sight's lean.
     shade: vec4<f32>,
     // Azimuths (0: no sight), elevations, explored columns, rows.
     counts: vec4<u32>,
@@ -46,6 +46,13 @@ struct Cutaway {
     grid: vec4<f32>,
     // Open columns' corner x, z, column size.
     columns: vec4<f32>,
+    // The previous sight's origin; w its reach.
+    previous: vec4<f32>,
+    // The previous sight's azimuths (0: none) and elevations.
+    previous_counts: vec4<u32>,
+    // How far the view has faded from the previous sight to the current,
+    // 0–1; the previous sight's lean.
+    fade: vec4<f32>,
 }
 
 // Written only when the sight or the explored ground changes.
@@ -55,6 +62,8 @@ struct CutawayData {
     // Per column: the lowest and highest open height, in HEIGHT_UNITs, as
     // two signed halves, the lowest in the low half.
     spans: array<u32, 262144>,
+    // The previous sight's depths, as `depths`.
+    previous_depths: array<f32, MAX_DIRECTIONS>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<storage, read> cutaway: Cutaway;
@@ -73,6 +82,11 @@ const FACING_AWAY: f32 = -0.3;
 const FACING_TOWARD: f32 = 0.2;
 const EDGE_FADE: f32 = 0.08;
 const REACH_SLACK: f32 = 1.0;
+const LEAN_MAX_ANGLE: f32 = 0.35;
+const LEAN_UPRIGHT: f32 = 0.5;
+const LEAN_SAMPLES: u32 = 6u;
+const LEAN_CLEAR: f32 = 2.0;
+const LEAN_CLEAR_SHARE: f32 = 0.1;
 // The grain the edge of what is drawn dissolves in, metres of the level.
 const GRAIN: f32 = 0.5;
 const HIDE_STEPS: u32 = 8u;
@@ -84,21 +98,49 @@ const TAU: f32 = 6.2831853;
 // What `judge` returns for a fragment that is not drawn.
 const CUT: f32 = -1.0;
 
-fn depth_at(column: u32, row: u32) -> f32 {
-    return data.depths[min(row * cutaway.counts.x + column, MAX_DIRECTIONS - 1u)];
+// Which sight a function reads: the one being shown, or the one the view
+// is fading over from (`Cutaway::previous`).
+const CURRENT: u32 = 0u;
+const PREVIOUS: u32 = 1u;
+
+// A sight's origin, its reach in w.
+fn sight_origin(which: u32) -> vec4<f32> {
+    return select(cutaway.origin, cutaway.previous, which == PREVIOUS);
 }
 
-// `Sight::depth_towards`: how far the sight reaches toward `offset`,
-// blended between the four directions round it.
-fn depth_towards(offset: vec3<f32>) -> f32 {
-    let magnitude = length(offset);
-    let azimuths = cutaway.counts.x;
-    let elevations = cutaway.counts.y;
-    if magnitude <= 1e-6 {
-        return cutaway.origin.w;
+// A sight's azimuths and elevations.
+fn sight_counts(which: u32) -> vec2<u32> {
+    return select(cutaway.counts.xy, cutaway.previous_counts.xy, which == PREVIOUS);
+}
+
+// A sight's lean.
+fn sight_lean(which: u32) -> f32 {
+    return select(cutaway.shade.w, cutaway.fade.y, which == PREVIOUS);
+}
+
+fn depth_at(which: u32, column: u32, row: u32) -> f32 {
+    let index = min(row * sight_counts(which).x + column, MAX_DIRECTIONS - 1u);
+    if which == PREVIOUS {
+        return data.previous_depths[index];
     }
+    return data.depths[index];
+}
+
+// The four directions round `offset` and how far between them it lies: the
+// columns and rows packed as (column 0, column 1, row 0, row 1), the
+// fractions in `between`.
+struct Around {
+    cells: vec4<u32>,
+    between: vec2<f32>,
+}
+
+fn around(which: u32, offset: vec3<f32>) -> Around {
+    let magnitude = length(offset);
+    let counts = sight_counts(which);
+    let azimuths = counts.x;
+    let elevations = counts.y;
     let column = (atan2(offset.z, offset.x) + PI) / TAU * f32(azimuths) - 0.5;
-    let height = offset.y / magnitude;
+    let height = offset.y / max(magnitude, 1e-6);
     let even = sign(height) * pow(abs(height), 1.0 / 3.0);
     let row = clamp((even + 1.0) / 2.0 * f32(elevations) - 0.5, 0.0, f32(elevations) - 1.0);
     let column_floor = floor(column);
@@ -106,38 +148,108 @@ fn depth_towards(offset: vec3<f32>) -> f32 {
     let column_1 = (column_0 + 1u) % azimuths;
     let row_0 = u32(floor(row));
     let row_1 = min(row_0 + 1u, elevations - 1u);
-    let across = column - column_floor;
-    let low = mix(depth_at(column_0, row_0), depth_at(column_1, row_0), across);
-    let high = mix(depth_at(column_0, row_1), depth_at(column_1, row_1), across);
-    return mix(low, high, row - floor(row));
+    return Around(vec4(column_0, column_1, row_0, row_1), vec2(column - column_floor, row - floor(row)));
 }
 
-// `Sight::seen`.
-fn seen(point: vec3<f32>, normal: vec3<f32>) -> f32 {
-    let offset = point - cutaway.origin.xyz;
+// `Sight::depth_towards`: how far the sight reaches toward `offset`,
+// blended between the four directions round it.
+fn depth_towards(which: u32, offset: vec3<f32>) -> f32 {
+    if length(offset) <= 1e-6 {
+        return sight_origin(which).w;
+    }
+    let cells = around(which, offset);
+    let c = cells.cells;
+    let low = mix(depth_at(which, c.x, c.z), depth_at(which, c.y, c.z), cells.between.x);
+    let high = mix(depth_at(which, c.x, c.w), depth_at(which, c.y, c.w), cells.between.x);
+    return mix(low, high, cells.between.y);
+}
+
+// `Sight::nearest_depth_towards`: the nearest of the four directions round
+// `offset`.
+fn nearest_depth_towards(which: u32, offset: vec3<f32>) -> f32 {
+    if length(offset) <= 1e-6 {
+        return sight_origin(which).w;
+    }
+    let c = around(which, offset).cells;
+    return min(
+        min(depth_at(which, c.x, c.z), depth_at(which, c.y, c.z)),
+        min(depth_at(which, c.x, c.w), depth_at(which, c.y, c.w)),
+    );
+}
+
+// `Sight::leans_past`.
+fn leans_past(which: u32, offset: vec3<f32>, distance: f32) -> f32 {
+    let lean = sight_lean(which);
+    let depth = nearest_depth_towards(which, offset);
+    if lean <= 0.0 || depth <= 1e-6 || depth >= distance {
+        return 0.0;
+    }
+    let angle = min(lean * (1.0 / depth - 1.0 / distance), LEAN_MAX_ANGLE);
+    let toward = offset / distance;
+    var side = cross(toward, vec3(0.0, 1.0, 0.0));
+    if length(side) <= 1e-6 {
+        side = vec3(1.0, 0.0, 0.0);
+    } else {
+        side = normalize(side);
+    }
+    let up = cross(side, toward);
+    let clear = depth + LEAN_CLEAR + depth * LEAN_CLEAR_SHARE;
+    let full = clear + LEAN_CLEAR + depth * LEAN_CLEAR_SHARE;
+    var best = 0.0;
+    for (var sample = 0u; sample < LEAN_SAMPLES; sample++) {
+        let around_angle = f32(sample) / f32(LEAN_SAMPLES) * TAU;
+        let aside = side * cos(around_angle) + up * (sin(around_angle) * LEAN_UPRIGHT);
+        let beside = toward * cos(angle) + aside * sin(angle);
+        best = max(best, smoothstep(clear, full, depth_towards(which, beside)));
+    }
+    return best;
+}
+
+// `Sight::seen`, for one of the two sights.
+fn seen_by(which: u32, point: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let origin = sight_origin(which);
+    let offset = point - origin.xyz;
     let distance = length(offset);
-    if distance > cutaway.origin.w || distance <= 1e-6 {
+    if distance > origin.w || distance <= 1e-6 {
         return 0.0;
     }
     let facing = smoothstep(FACING_AWAY, FACING_TOWARD, dot(normal, -offset / distance));
-    let depth = depth_towards(offset);
+    let depth = depth_towards(which, offset);
     let start = depth + SEEN_MARGIN + depth * SEEN_MARGIN_SHARE;
     let end = start + SEEN_SOFT + depth * SEEN_SOFT_SHARE;
-    return facing * (1.0 - smoothstep(start, end, distance));
+    var amount = 1.0 - smoothstep(start, end, distance);
+    if amount < 1.0 {
+        amount = max(amount, leans_past(which, offset, distance));
+    }
+    return facing * amount;
 }
 
-// `Sight::reaches`.
+// `Cutaway::seen`: the current sight's, faded in over the previous one's.
+fn seen(point: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let current = seen_by(CURRENT, point, normal);
+    let fade = cutaway.fade.x;
+    if fade >= 1.0 || cutaway.previous_counts.x == 0u {
+        return current;
+    }
+    return mix(seen_by(PREVIOUS, point, normal), current, fade);
+}
+
+// `Sight::reaches`, the current sight's.
 fn reaches(point: vec3<f32>) -> bool {
     let offset = point - cutaway.origin.xyz;
     let distance = length(offset);
-    return distance <= cutaway.origin.w && distance <= depth_towards(offset) + REACH_SLACK;
+    return distance <= cutaway.origin.w && distance <= depth_towards(CURRENT, offset) + REACH_SLACK;
 }
 
-// `Sight::sees_body`.
+// `Sight::sees_body`, the current sight's.
 fn sees_body(origin: vec3<f32>, lift: f32, margin: f32) -> bool {
     let offset = origin + vec3(0.0, lift, 0.0) - cutaway.origin.xyz;
     let distance = length(offset);
-    return distance <= cutaway.origin.w && distance <= depth_towards(offset) + margin;
+    if distance > cutaway.origin.w {
+        return false;
+    }
+    let depth = depth_towards(CURRENT, offset);
+    return distance <= depth + margin || leans_past(CURRENT, offset, distance) >= 0.5;
 }
 
 // `Explored::amount`.

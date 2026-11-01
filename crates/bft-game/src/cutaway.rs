@@ -11,7 +11,11 @@
 //! - a surface the viewpoint **sees** (it faces the viewpoint, or is turned
 //!   only a little away, and nothing nearer in its direction hides it) is
 //!   drawn as it is, fading toward unseen as it turns away or goes out of
-//!   sight, so the edge of what is seen is soft;
+//!   sight, so the edge of what is seen is soft. The viewpoint is not a
+//!   point but a patch [`lean`](Sight::lean) metres round it, as a head
+//!   leans to look past what is in the way: something narrow (a pillar, a
+//!   post) hides only a short shadow right behind it, while a wall hides
+//!   all behind it ([`Sight::leans_past`]);
 //! - one that is not seen but **hides** space the viewpoint sees from the
 //!   [`eye`](Cutaway::eye) is cut: the roof over a tunnel and the wall on
 //!   the eye's side of it, the far side of a hill in front of a valley.
@@ -91,6 +95,24 @@ pub const MAX_DIRECTIONS: usize = 8192;
 /// The most cells an [`Explored`] map holds, one bit each.
 pub const MAX_CELLS: usize = 512 * 512;
 
+/// The widest angle a lean looks aside by, radians: a surface right beside
+/// the viewpoint would otherwise send the test round to its back.
+const LEAN_MAX_ANGLE: f32 = 0.35;
+
+/// How much less the viewpoint leans up or down than sideways: a head
+/// moves further side to side than it rises.
+const LEAN_UPRIGHT: f32 = 0.5;
+
+/// How many directions round a hidden point a lean tries.
+const LEAN_SAMPLES: u32 = 6;
+
+/// How much further than what hides a point a direction beside it has to
+/// see before it counts as seeing past, metres...
+const LEAN_CLEAR: f32 = 2.0;
+
+/// ...and as a share of that distance.
+const LEAN_CLEAR_SHARE: f32 = 0.1;
+
 /// How far past the depth a sight holds a surface is still fully seen,
 /// metres: the sight is coarse, and a surface is never exactly where a ray
 /// met it.
@@ -146,11 +168,12 @@ const HIDE_LENGTH: f32 = 300.0;
 const HIDE_DEPTH: f32 = 30.0;
 
 /// The size of the small buffer: what changes every frame.
-const HEADER_BYTES: usize = 96;
+const HEADER_BYTES: usize = 144;
 
 /// The size of the large buffer: the sight's depths, the explored bits and
 /// the open columns.
-const DATA_BYTES: usize = 4 * (MAX_DIRECTIONS + MAX_CELLS / 32 + (COLUMNS * COLUMNS) as usize);
+const DATA_BYTES: usize =
+    4 * (MAX_DIRECTIONS + MAX_CELLS / 32 + (COLUMNS * COLUMNS) as usize + MAX_DIRECTIONS);
 
 /// The small buffer every [`ModelMaterial`] reads the cutaway from, written
 /// whenever the cutaway changes.
@@ -171,6 +194,15 @@ pub struct Cutaway {
     pub eye: Vec3,
     /// What the viewpoint sees.
     pub sight: Sight,
+    /// What it saw before [`sight`](Self::sight), while the view fades over
+    /// from one to the other ([`fade`](Self::fade)): a sight is built over
+    /// several frames and replaced whole, and swapped at once every
+    /// surface it changes would jump. Only how seen a surface is fades;
+    /// what is cut and which bodies show go by `sight` alone.
+    pub previous: Option<Sight>,
+    /// How far the view has faded from [`previous`](Self::previous) to
+    /// [`sight`](Self::sight), 0–1.
+    pub fade: f32,
     /// The ground it has seen.
     pub explored: Explored,
     /// How bright ground seen before but not now is drawn, 0–1.
@@ -186,6 +218,8 @@ impl Default for Cutaway {
             min_view_scale: 1.0,
             eye: Vec3::ZERO,
             sight: Sight::default(),
+            previous: None,
+            fade: 1.0,
             explored: Explored::default(),
             explored_shade: 0.5,
             unseen_shade: 0.25,
@@ -213,6 +247,10 @@ pub struct Sight {
     pub depths: Vec<f32>,
     /// The open space those directions reach through, column by column.
     pub columns: OpenColumns,
+    /// How far round [`origin`](Self::origin) the viewpoint may move to see
+    /// past what is in the way, metres; less up and down than sideways. 0
+    /// sees from the origin alone.
+    pub lean: f32,
 }
 
 impl Sight {
@@ -228,6 +266,7 @@ impl Sight {
             elevations,
             depths: vec![reach; (azimuths * elevations) as usize],
             columns: OpenColumns::around(origin, reach),
+            lean: 0.0,
         }
     }
 
@@ -296,6 +335,15 @@ impl Sight {
         )
     }
 
+    /// How far the nearest of the four directions round `offset` reaches:
+    /// at the edge of something, where the blend of
+    /// [`depth_towards`](Self::depth_towards) lies between it and what is
+    /// behind it, this is the thing itself.
+    pub fn nearest_depth_towards(&self, offset: Vec3) -> f32 {
+        let (depths, _) = self.around(offset);
+        depths.into_iter().fold(f32::INFINITY, f32::min)
+    }
+
     /// How far the sight reaches toward `offset`, blended between the
     /// directions round it, so it changes smoothly across them.
     pub fn depth_towards(&self, offset: Vec3) -> f32 {
@@ -318,7 +366,50 @@ impl Sight {
         let depth = self.depth_towards(offset);
         let start = depth + SEEN_MARGIN + depth * SEEN_MARGIN_SHARE;
         let end = start + SEEN_SOFT + depth * SEEN_SOFT_SHARE;
-        facing * (1.0 - smoothstep(start, end, distance))
+        let direct = 1.0 - smoothstep(start, end, distance);
+        let seen = if direct < 1.0 {
+            direct.max(self.leans_past(offset, distance))
+        } else {
+            direct
+        };
+        facing * seen
+    }
+
+    /// How much a viewpoint leaning up to [`lean`](Self::lean) round the
+    /// origin sees past what hides the point `offset`, `distance` away, 0–1.
+    ///
+    /// Leaning `lean` aside, the line to the point crosses the distance of
+    /// what hides it at an angle `lean · (1/depth − 1/distance)` off the
+    /// point's own direction, as the origin sees it. So the directions that
+    /// far round it are tried: where one sees well past `depth`, what hides
+    /// the point ends before that, and a lean sees round it. Something
+    /// narrower than the lean, near the point, hides it from no lean at all;
+    /// a wall wider than that hides it from every one.
+    ///
+    /// What hides the point is the nearest of the directions round it
+    /// ([`nearest_depth_towards`](Self::nearest_depth_towards)): at the edge
+    /// of something the blended depth lies halfway to what is behind it,
+    /// where nothing is, and a lean measured from there would hardly look
+    /// aside, leaving a dark line round every shadow.
+    pub fn leans_past(&self, offset: Vec3, distance: f32) -> f32 {
+        let depth = self.nearest_depth_towards(offset);
+        if self.lean <= 0.0 || depth <= f32::EPSILON || depth >= distance {
+            return 0.0;
+        }
+        let angle = (self.lean * (1.0 / depth - 1.0 / distance)).min(LEAN_MAX_ANGLE);
+        let toward = offset / distance;
+        let side = toward.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+        let up = side.cross(toward);
+        let clear = depth + LEAN_CLEAR + depth * LEAN_CLEAR_SHARE;
+        let full = clear + LEAN_CLEAR + depth * LEAN_CLEAR_SHARE;
+        (0..LEAN_SAMPLES)
+            .map(|sample| {
+                let around = sample as f32 / LEAN_SAMPLES as f32 * std::f32::consts::TAU;
+                let aside = side * around.cos() + up * (around.sin() * LEAN_UPRIGHT);
+                let beside = toward * angle.cos() + aside * angle.sin();
+                smoothstep(clear, full, self.depth_towards(beside))
+            })
+            .fold(0.0, f32::max)
     }
 
     /// Whether the viewpoint sees the surface at `point` facing `normal`, at
@@ -340,10 +431,16 @@ impl Sight {
     /// in its direction. A vehicle's middle is over its origin, and half of
     /// it may stand past a wall's edge and still be seen; a pickup in a
     /// crate is just past the crate's side.
+    ///
+    /// A lean ([`Sight::leans_past`]) sees a body past something narrow too.
     pub fn sees_body(&self, origin: Vec3, lift: f32, margin: f32) -> bool {
         let offset = origin + Vec3::Y * lift - self.origin;
         let distance = offset.length();
-        distance <= self.reach && distance <= self.depth_towards(offset) + margin
+        if distance > self.reach {
+            return false;
+        }
+        let depth = self.depth_towards(offset);
+        distance <= depth + margin || self.leans_past(offset, distance) >= 0.5
     }
 }
 
@@ -556,6 +653,20 @@ impl Explored {
 }
 
 impl Cutaway {
+    /// How much the viewpoint sees the surface at `point` facing `normal`,
+    /// 0–1, as the view shows it: [`Sight::seen`], faded from the previous
+    /// sight's to the current one's.
+    pub fn seen(&self, point: Vec3, normal: Vec3) -> f32 {
+        let current = self.sight.seen(point, normal);
+        match &self.previous {
+            Some(previous) if self.fade < 1.0 && !previous.is_empty() => {
+                let before = previous.seen(point, normal);
+                before + (current - before) * self.fade.clamp(0.0, 1.0)
+            }
+            _ => current,
+        }
+    }
+
     /// Whether the surface at `point`, facing `normal`, is cut from a view
     /// the cutaway applies to: the shader's judgement for an untagged mesh.
     pub fn cuts(&self, point: Vec3, normal: Vec3) -> bool {
@@ -573,7 +684,7 @@ impl Cutaway {
             return edge < 0.5;
         }
         // The shader dissolves the edge; this takes it at half.
-        edge < 0.5 || (sight.seen(point, normal) < 0.5 && self.hides_sight(point))
+        edge < 0.5 || (self.seen(point, normal) < 0.5 && self.hides_sight(point))
     }
 
     /// Whether `point` stands in front of open space the viewpoint sees, as
@@ -618,7 +729,7 @@ impl Cutaway {
                 self.min_view_scale,
                 self.explored_shade,
                 self.unseen_shade,
-                0.0,
+                sight.lean,
             ],
         );
         // No directions reads as no sight at all.
@@ -633,6 +744,21 @@ impl Cutaway {
         floats(
             &mut bytes,
             [columns.corner.x, columns.corner.y, columns.cell, 0.0],
+        );
+        let previous = self
+            .previous
+            .as_ref()
+            .filter(|previous| !previous.is_empty());
+        let none = Sight::default();
+        let before = previous.unwrap_or(&none);
+        floats(&mut bytes, before.origin.extend(before.reach).to_array());
+        let azimuths = previous.map_or(0, |previous| previous.azimuths);
+        for count in [azimuths, before.elevations, 0, 0] {
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        floats(
+            &mut bytes,
+            [self.fade.clamp(0.0, 1.0), before.lean, 0.0, 0.0],
         );
         bytes
     }
@@ -652,6 +778,14 @@ impl Cutaway {
         for index in 0..(COLUMNS * COLUMNS) as usize {
             let span = sight.columns.spans.get(index).copied().unwrap_or(NO_SPAN);
             bytes.extend_from_slice(&span.to_le_bytes());
+        }
+        let previous = self.previous.as_ref();
+        for index in 0..MAX_DIRECTIONS {
+            let depth = previous
+                .and_then(|previous| previous.depths.get(index))
+                .copied()
+                .unwrap_or(0.0);
+            bytes.extend_from_slice(&depth.to_le_bytes());
         }
         bytes
     }
@@ -726,7 +860,7 @@ fn make_params(cutaway: Res<Cutaway>, buffers: Option<ResMut<Assets<ShaderBuffer
 fn write_params(
     cutaway: Res<Cutaway>,
     buffers: Option<ResMut<Assets<ShaderBuffer>>>,
-    mut written: Local<Option<(Sight, Explored)>>,
+    mut written: Local<Option<(Sight, Option<Sight>, Explored)>>,
 ) {
     if !cutaway.is_changed() {
         return;
@@ -737,12 +871,18 @@ fn write_params(
     if let Some(mut header) = buffers.get_mut(&HEADER) {
         header.data = Some(cutaway.header_bytes());
     }
-    let stale = written
-        .as_ref()
-        .is_none_or(|(sight, explored)| *sight != cutaway.sight || *explored != cutaway.explored);
+    // Only the fade changes from frame to frame; the large buffer is
+    // written when what it holds does.
+    let stale = written.as_ref().is_none_or(|(sight, previous, explored)| {
+        *sight != cutaway.sight || *previous != cutaway.previous || *explored != cutaway.explored
+    });
     if stale && let Some(mut data) = buffers.get_mut(&DATA) {
         data.data = Some(cutaway.data_bytes());
-        *written = Some((cutaway.sight.clone(), cutaway.explored.clone()));
+        *written = Some((
+            cutaway.sight.clone(),
+            cutaway.previous.clone(),
+            cutaway.explored.clone(),
+        ));
     }
 }
 
@@ -856,6 +996,98 @@ mod tests {
         assert!(!cutaway.cuts(Vec3::new(9.5, 2.0, 0.5), Vec3::Y));
         // The side toward the tank is seen.
         assert!(cutaway.sight.sees(Vec3::new(8.0, 1.0, 0.0), Vec3::NEG_X));
+    }
+
+    /// A viewpoint 4 m over flat ground at y = 0, and 10 m out along +x a
+    /// post `width` metres across standing 6 m tall, with the depths cast
+    /// against both.
+    fn post_sight(width: f32, lean: f32) -> Sight {
+        let mut sight = Sight::open(Vec3::new(0.0, 4.0, 0.0), 400.0, 256, 32);
+        sight.lean = lean;
+        let (low, high) = (
+            Vec3::new(9.5, 0.0, -width / 2.0),
+            Vec3::new(10.5, 6.0, width / 2.0),
+        );
+        for row in 0..sight.elevations {
+            for column in 0..sight.azimuths {
+                let direction = sight.direction(column, row);
+                let mut depth = sight.reach;
+                if direction.y < 0.0 {
+                    depth = depth.min(4.0 / -direction.y);
+                }
+                let inverse = direction.recip();
+                let near = (low - sight.origin) * inverse;
+                let far = (high - sight.origin) * inverse;
+                let enter = near.min(far).max_element();
+                let leave = near.max(far).min_element();
+                if enter <= leave && enter > 0.0 {
+                    depth = depth.min(enter);
+                }
+                sight.record(column, row, depth);
+            }
+        }
+        sight
+    }
+
+    #[test]
+    fn a_lean_sees_past_a_post_but_not_a_wall() {
+        // Ground 12 m behind a post a metre across: a lean sees round it, so
+        // the post throws no shadow at all.
+        let behind = Vec3::new(22.0, 0.0, 0.0);
+        assert!(!post_sight(1.0, 0.0).sees(behind, Vec3::Y));
+        assert!(post_sight(1.0, 2.5).sees(behind, Vec3::Y));
+        // A block 4 m across is wider than the lean: behind it a shadow
+        // stays, shorter than without the lean.
+        assert!(!post_sight(4.0, 2.5).sees(behind, Vec3::Y));
+        assert!(!post_sight(4.0, 0.0).sees(Vec3::new(80.0, 0.0, 0.0), Vec3::Y));
+        assert!(post_sight(4.0, 2.5).sees(Vec3::new(80.0, 0.0, 0.0), Vec3::Y));
+        // A wall 20 m across hides what is behind it from any lean.
+        assert!(!post_sight(20.0, 2.5).sees(behind, Vec3::Y));
+    }
+
+    /// The lean is measured from what hides the point, not from the
+    /// depths' blend: where the blend runs from the post to the ground
+    /// behind it, it lies where nothing is, and a lean measured from there
+    /// looks aside too little to clear the post, leaving dark lines. With a
+    /// lean narrow enough that the difference shows, ground right across
+    /// the post's shadow is still seen.
+    #[test]
+    fn the_lean_is_measured_from_what_hides_the_point() {
+        let sight = post_sight(1.0, 0.75);
+        for step in 0..=30 {
+            let point = Vec3::new(22.0, 0.0, step as f32 * 0.1);
+            assert!(sight.sees(point, Vec3::Y), "{point} is dark");
+        }
+    }
+
+    #[test]
+    fn a_lean_sees_a_body_past_a_post() {
+        let behind = Vec3::new(25.0, 0.0, 0.0);
+        assert!(!post_sight(1.0, 0.0).sees_body(behind, 1.5, 3.0));
+        assert!(post_sight(1.0, 2.5).sees_body(behind, 1.5, 3.0));
+        assert!(!post_sight(20.0, 2.5).sees_body(behind, 1.5, 3.0));
+    }
+
+    /// While the view fades from one sight to the next, how seen a surface
+    /// is goes over smoothly rather than at once.
+    #[test]
+    fn a_new_sight_fades_in_over_the_old() {
+        let behind = Vec3::new(22.0, 0.0, 0.0);
+        let mut cutaway = Cutaway {
+            enabled: true,
+            sight: post_sight(1.0, 0.0),
+            previous: Some(post_sight(1.0, 6.0)),
+            fade: 0.0,
+            ..default()
+        };
+        let before = cutaway.previous.as_ref().unwrap().seen(behind, Vec3::Y);
+        let after = cutaway.sight.seen(behind, Vec3::Y);
+        assert!(before > 0.9 && after < 0.1);
+        assert!((cutaway.seen(behind, Vec3::Y) - before).abs() < 1e-6);
+        cutaway.fade = 0.5;
+        assert!((cutaway.seen(behind, Vec3::Y) - (before + after) / 2.0).abs() < 1e-6);
+        cutaway.fade = 1.0;
+        assert!((cutaway.seen(behind, Vec3::Y) - after).abs() < 1e-6);
     }
 
     #[test]
