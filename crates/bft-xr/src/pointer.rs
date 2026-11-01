@@ -44,6 +44,7 @@ use bft_game::guided_view::GuidedMissile;
 use bft_sim::vehicle::{Controlled, PlayerInput};
 
 use crate::assist::AimLock;
+use crate::profiles::{FRAME, FrameControllers, SIMPLE, TOUCH};
 use crate::table::Table;
 use crate::{
     AimSource, MainCameras, PANEL_LAYER, Panel, PanelMaterial, View, ring_image, root_pose_now,
@@ -81,13 +82,6 @@ const STEADY_TIME: f32 = 0.05;
 /// How fast the aim has to swing, radians a second, before the smoothing
 /// lets go entirely, so a sweep of the hand is not trailed.
 const SWEEP_SPEED: f32 = 3.0;
-
-/// The Oculus Touch profile, which SteamVR remaps onto the Steam Frame's
-/// controllers.
-const TOUCH: &str = "/interaction_profiles/oculus/touch_controller";
-
-/// The Khronos simple controller.
-const SIMPLE: &str = "/interaction_profiles/khr/simple_controller";
 
 /// The pointer's actions and the set they are in.
 #[derive(Resource)]
@@ -186,12 +180,26 @@ fn create_actions(instance: Res<OxrInstance>, mut commands: Commands) {
 /// The right controller aims and its trigger clicks.
 fn suggest_bindings(
     actions: Option<Res<PointerActions>>,
+    frame: Res<FrameControllers>,
     mut bindings: MessageWriter<OxrSuggestActionBinding>,
 ) {
     let Some(actions) = actions else {
         return;
     };
-    for (action, profile, path) in [
+    // The Frame's aim and trigger have the Touch profile's paths.
+    let on_frame = frame.0.then_some([
+        (
+            actions.aim.as_raw(),
+            FRAME,
+            "/user/hand/right/input/aim/pose",
+        ),
+        (
+            actions.select.as_raw(),
+            FRAME,
+            "/user/hand/right/input/trigger/value",
+        ),
+    ]);
+    for (action, profile, path) in on_frame.into_iter().flatten().chain([
         (
             actions.aim.as_raw(),
             TOUCH,
@@ -212,7 +220,7 @@ fn suggest_bindings(
             SIMPLE,
             "/user/hand/right/input/select/click",
         ),
-    ] {
+    ]) {
         bindings.write(OxrSuggestActionBinding {
             action,
             interaction_profile: profile.into(),

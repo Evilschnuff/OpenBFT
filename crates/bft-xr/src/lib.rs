@@ -69,6 +69,7 @@ mod eyes;
 mod hands;
 mod hud;
 mod pointer;
+mod profiles;
 mod table;
 
 use avian3d::prelude::SpatialQuery;
@@ -97,7 +98,9 @@ use bevy_mod_xr::session::{XrState, XrTrackingRoot};
 use bft_game::UiCamera;
 use bft_game::aim::{AIM_FALLBACK_RANGE, ExternalAim, aim_point};
 use bft_game::cutaway::Cutaway;
+use bft_game::mesh_builder::face_the_camera;
 use bft_game::ui::hud::sensor::{AuxiliaryCamera, MainCamera3d, world_and_player};
+use bft_game::viewpoint::ExternalViewer;
 use bft_sim::vehicle::{Controlled, PlayerInput, Vehicle};
 
 /// The render layer only the eye cameras see: the UI panel and the
@@ -141,6 +144,11 @@ pub fn with_xr<G: PluginGroup>(defaults: G) -> PluginGroupBuilder {
     // for hands it cannot see.
     let mut exts = OxrExtensions::default();
     exts.ext_eye_gaze_interaction = true;
+    // The Steam Frame's own controller profile ([`profiles::FRAME`]), which
+    // the `openxr` crate has no field for yet.
+    exts.raw_mut()
+        .other
+        .push(profiles::FRAME_EXTENSION.to_vec());
     add_xr_plugins(defaults)
         .set(OxrInitPlugin { exts, ..default() })
         .set(OxrReferenceSpacePlugin {
@@ -179,6 +187,22 @@ impl Plugin for VrPlugin {
             info!("eye tracking: the runtime offers no eye gaze; aiming with the head");
         }
 
+        let frame = app
+            .world()
+            .get_resource::<OxrEnabledExtensions>()
+            .is_some_and(|exts| {
+                exts.raw()
+                    .other
+                    .iter()
+                    .any(|name| name == profiles::FRAME_EXTENSION)
+            });
+        if frame {
+            info!("controllers: the runtime offers the Steam Frame controller profile");
+        } else {
+            info!("controllers: no Steam Frame controller profile; suggesting Touch bindings");
+        }
+        app.insert_resource(profiles::FrameControllers(frame));
+
         embedded_asset!(app, "panel.wgsl");
         app.add_plugins(MaterialPlugin::<PanelMaterial>::default())
             // On the eye cameras from the moment they exist, so no system
@@ -209,11 +233,46 @@ impl Plugin for VrPlugin {
                     fit_panel_to_window,
                 ),
             )
+            .init_resource::<ExternalViewer>()
             .add_systems(
                 PostUpdate,
-                follow_main_camera.before(TransformSystems::Propagate),
+                (
+                    follow_main_camera.before(TransformSystems::Propagate),
+                    // Once the seat has followed the camera or the table has
+                    // moved this frame, and before facades turn to face it.
+                    report_viewer
+                        .after(follow_main_camera)
+                        .after(table::place_table)
+                        .before(face_the_camera)
+                        .before(TransformSystems::Propagate),
+                ),
             );
     }
+}
+
+/// Tell `bft-game` where the head is, so billboards, facades and tracers
+/// face it rather than the chase camera ([`ExternalViewer`]).
+///
+/// The eyes are children of the seat, so the seat's transform this frame
+/// times their midpoint is this frame's head, however the seat moved or the
+/// table scaled it.
+#[allow(clippy::type_complexity)]
+fn report_viewer(
+    roots: Query<&Transform, (With<XrTrackingRoot>, Without<XrCamera>)>,
+    eyes: Query<&Transform, (With<XrCamera>, Without<XrTrackingRoot>)>,
+    mut viewer: ResMut<ExternalViewer>,
+) {
+    let mut local = eyes.iter();
+    let head = local.next().map(|first| match local.next() {
+        Some(second) => Transform::from_translation(first.translation.midpoint(second.translation))
+            .with_rotation(first.rotation.slerp(second.rotation, 0.5)),
+        None => *first,
+    });
+    let seat = roots.iter().next().copied();
+    viewer.0 = seat.zip(head).map(|(seat, head)| {
+        let world = seat.mul_transform(head);
+        Transform::from_translation(world.translation).with_rotation(world.rotation)
+    });
 }
 
 /// An unlit textured quad drawn over everything: the UI panel, the HUD

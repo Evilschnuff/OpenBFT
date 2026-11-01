@@ -53,6 +53,13 @@ const FALLBACK_REACH: f32 = 600.0;
 /// gives no chase camera: the player's `camback[0]` height.
 const FALLBACK_EYE_HEIGHT: f32 = 4.0;
 
+/// How far round its origin the sight may lean to see past what is in the
+/// way, metres of the level ([`Sight::lean`]): as a player shifts their
+/// head to look past a post. Posts and pillars a few metres across then
+/// hide nothing beyond the sight's own slack, and a wall still hides what
+/// is behind it.
+const SIGHT_LEAN: f32 = 6.0;
+
 /// How far under a ceiling the tank looks from at most, metres, so its
 /// rays never start inside the rock of a low tunnel.
 const CEILING_CLEARANCE: f32 = 0.5;
@@ -169,7 +176,9 @@ fn under_ceiling(spatial: &SpatialQuery, hull: Vec3, eye: Vec3) -> Vec3 {
 }
 
 /// Cast the next share of the tank's look round, and hand the sight over
-/// once it is complete, with the ground it saw marked explored.
+/// once it is complete, with the ground it saw marked explored. The view
+/// then fades from the old sight to the new one over the next sweep
+/// ([`Cutaway::fade`]), so shadows move rather than jump.
 #[allow(clippy::too_many_arguments)]
 fn look_round(
     view: Res<View>,
@@ -189,6 +198,8 @@ fn look_round(
             Vec2::new(left.max(right), top.max(bottom)),
         );
         cutaway.sight = Sight::default();
+        cutaway.previous = None;
+        cutaway.fade = 1.0;
         *sweep = Sweep::default();
     }
 
@@ -204,7 +215,10 @@ fn look_round(
     let sweep = &mut *sweep;
     let sight = sweep.sight.get_or_insert_with(|| {
         let origin = under_ceiling(&spatial, hull, eye);
-        Sight::open(origin, reach, AZIMUTHS, ELEVATIONS)
+        Sight {
+            lean: SIGHT_LEAN,
+            ..Sight::open(origin, reach, AZIMUTHS, ELEVATIONS)
+        }
     });
 
     let total = sight.azimuths * sight.elevations;
@@ -221,6 +235,11 @@ fn look_round(
         sight.record(column, row, depth);
     }
     sweep.next = end;
+    // The view fades from the last sight to this one over the time the next
+    // takes to cast, so it has just got there when the next is handed over.
+    if cutaway.fade < 1.0 {
+        cutaway.fade = (cutaway.fade + 1.0 / SWEEP_FRAMES as f32).min(1.0);
+    }
     if end < total {
         return;
     }
@@ -229,7 +248,11 @@ fn look_round(
     sweep.next = 0;
     sight.columns.widen(WIDEN_COLUMNS);
     mark_seen_ground(&sight, &mut cutaway.explored);
-    cutaway.sight = sight;
+    let mut before = std::mem::replace(&mut cutaway.sight, sight);
+    // Only its depths are faded over; its open space is not read.
+    before.columns = Default::default();
+    cutaway.previous = (!before.is_empty()).then_some(before);
+    cutaway.fade = 0.0;
 }
 
 /// Mark the ground the sight reaches across as explored: in each column,

@@ -13,13 +13,7 @@ use bevy_mod_openxr::session::OxrSession;
 use bevy_mod_openxr::spaces::OxrSpaceLocationFlags;
 use bevy_mod_xr::session::{XrSessionCreated, session_available};
 
-/// The interaction profiles the grips are suggested for: the Oculus Touch
-/// profile, which SteamVR remaps onto the Steam Frame's controllers, and the
-/// Khronos simple controller.
-const PROFILES: [&str; 2] = [
-    "/interaction_profiles/oculus/touch_controller",
-    "/interaction_profiles/khr/simple_controller",
-];
+use crate::profiles::{FRAME, FrameControllers, SIMPLE, TOUCH};
 
 /// A hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,15 +86,19 @@ fn create_actions(instance: Res<OxrInstance>, mut commands: Commands) {
 }
 
 /// Bind each grip action to its hand's grip pose.
+///
+/// The grip pose has the same path in every profile ([`crate::profiles`]).
 fn suggest_bindings(
     actions: Option<Res<GripActions>>,
+    frame: Res<FrameControllers>,
     mut bindings: MessageWriter<OxrSuggestActionBinding>,
 ) {
     let Some(actions) = actions else {
         return;
     };
+    let profiles = [TOUCH, SIMPLE].into_iter().chain(frame.0.then_some(FRAME));
     for (side, action) in &actions.grips {
-        for profile in PROFILES {
+        for profile in profiles.clone() {
             bindings.write(OxrSuggestActionBinding {
                 action: action.as_raw(),
                 interaction_profile: profile.into(),

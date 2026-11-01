@@ -3,29 +3,31 @@
 //! Each game [`Action`] worth having in the hand is an OpenXR action of its
 //! own, named after it, so the runtime's binding screen (SteamVR's
 //! "Controller bindings") lists them by name and the player can put any of
-//! them on any button. The suggested layout is for the Oculus Touch profile,
-//! which SteamVR remaps onto controllers it has no OpenXR profile for, the
-//! Steam Frame's among them, plus the simple controller for a runtime with
-//! nothing better:
+//! them on any button. The layout is suggested for the Steam Frame's own
+//! controllers, for the Oculus Touch profile SteamVR falls back to without
+//! them, and for the simple controller ([`crate::profiles`]):
 //!
-//! | Touch | Steam Frame (SteamVR's remap) | Action |
+//! | Steam Frame | Touch (on the Frame, SteamVR's remap) | Action |
 //! |---|---|---|
 //! | left stick | left stick | drive toward where it points |
-//! | left trigger | left trigger or bumper | alternate fire |
-//! | left X | left d-pad down | automap |
-//! | left Y | left d-pad up, left or right | objectives |
-//! | left menu | View | pause |
-//! | right trigger | right trigger or bumper | fire |
-//! | right grip, seated | right grip | detonate mines |
-//! | left stick click | left stick click | detonate mines |
+//! | left trigger | left trigger (or bumper) | alternate fire |
+//! | left d-pad down | left X (d-pad down) | automap |
+//! | left d-pad up | left Y (d-pad up, left or right) | objectives |
+//! | left d-pad left / right | — | previous / next weapon |
+//! | View | left menu (View) | pause |
+//! | right trigger | right trigger (or bumper) | fire |
+//! | right bumper | right grip seated, left stick click | detonate mines |
 //! | either grip, at the table | the same | hold and move the table |
-//! | right A | A | change form |
-//! | right B | B, X or Y | weak / strong |
-//! | right stick up / down | right stick up / down | climb / dive |
+//! | A | right A | change form |
+//! | B | right B (B, X or Y) | weak / strong |
+//! | right stick up / down | the same | climb / dive |
 //! | right stick flicked left / right | the same | previous / next weapon |
 //! | right stick, flying a guided missile | the same | steer the missile |
-//! | right stick click | right stick click | aim with the hand / the head |
-//! | right stick held in | right stick held in | table / seat ([`View`]) |
+//! | right stick click | the same | aim with the hand / the head |
+//! | right stick held in | the same | table / seat ([`View`]) |
+//!
+//! On the Frame's own profile the left bumper, the stick clicks' spare
+//! one, X, Y and the right menu button are left free.
 //!
 //! The weapon slots, quick save and quick load are actions too, unbound,
 //! for a player who wants them on buttons of their own.
@@ -44,9 +46,10 @@
 //! While a missile is guided the right stick's two axes steer it instead,
 //! through [`ExternalGuide`], and neither climbs, dives nor changes weapon.
 //!
-//! At the table the grips hold the table ([`table`](crate::table)), so the
-//! right grip's detonate is not read there and the left stick's click is
-//! the one that detonates.
+//! At the table the grips hold the table ([`table`](crate::table)). With
+//! the Touch layout, then, the right grip's detonate is not read there and
+//! the left stick's click is the one that detonates; on the Frame's own
+//! profile detonate is on the bumper, clear of the grips, in both views.
 //!
 //! Recoil had no controllers in the hand, so the layout, the stick
 //! thresholds, the weapon flick and the long press are presentation
@@ -67,14 +70,8 @@ use bft_game::ui::{Action, ExternalActions};
 use bft_sim::vehicle::{Controlled, Vehicle};
 use bft_sim::weapons::WeaponLoadout;
 
+use crate::profiles::{FRAME, FrameControllers, SIMPLE, TOUCH};
 use crate::{AimSource, View};
-
-/// The Oculus Touch profile, which SteamVR remaps onto the Steam Frame's
-/// controllers.
-const TOUCH: &str = "/interaction_profiles/oculus/touch_controller";
-
-/// The Khronos simple controller: a select and a menu button per hand.
-const SIMPLE: &str = "/interaction_profiles/khr/simple_controller";
 
 /// How far a stick goes over before it counts as a held direction.
 ///
@@ -127,58 +124,110 @@ const REVERSE_HYSTERESIS: f32 = 0.15;
 /// and the seat instead of switching the aim, seconds.
 const LONG_PRESS: f32 = 0.6;
 
-/// The button actions and where the Touch and simple profiles put them.
-const BUTTONS: &[(Action, &[&str], &[&str])] = &[
+/// Where each profile puts an action.
+struct Suggested {
+    frame: &'static [&'static str],
+    touch: &'static [&'static str],
+    simple: &'static [&'static str],
+}
+
+/// An action no profile binds: there for the player to bind.
+const UNBOUND: Suggested = Suggested {
+    frame: &[],
+    touch: &[],
+    simple: &[],
+};
+
+/// The button actions and where each profile puts them.
+const BUTTONS: &[(Action, Suggested)] = &[
     (
         Action::Fire,
-        &["/user/hand/right/input/trigger/value"],
-        &["/user/hand/right/input/select/click"],
+        Suggested {
+            frame: &["/user/hand/right/input/trigger/value"],
+            touch: &["/user/hand/right/input/trigger/value"],
+            simple: &["/user/hand/right/input/select/click"],
+        },
     ),
     (
         Action::AltFire,
-        &["/user/hand/left/input/trigger/value"],
-        &["/user/hand/left/input/select/click"],
+        Suggested {
+            frame: &["/user/hand/left/input/trigger/value"],
+            touch: &["/user/hand/left/input/trigger/value"],
+            simple: &["/user/hand/left/input/select/click"],
+        },
     ),
     (
         Action::Detonate,
-        &[
-            "/user/hand/right/input/squeeze/value",
-            "/user/hand/left/input/thumbstick/click",
-        ],
-        &[],
+        Suggested {
+            frame: &["/user/hand/right/input/bumper/click"],
+            touch: &[
+                "/user/hand/right/input/squeeze/value",
+                "/user/hand/left/input/thumbstick/click",
+            ],
+            simple: &[],
+        },
     ),
-    (Action::NextForm, &["/user/hand/right/input/a/click"], &[]),
+    (
+        Action::NextForm,
+        Suggested {
+            frame: &["/user/hand/right/input/a/click"],
+            touch: &["/user/hand/right/input/a/click"],
+            simple: &[],
+        },
+    ),
     (
         Action::ToggleStrong,
-        &["/user/hand/right/input/b/click"],
-        &[],
+        Suggested {
+            frame: &["/user/hand/right/input/b/click"],
+            touch: &["/user/hand/right/input/b/click"],
+            simple: &[],
+        },
     ),
-    (Action::ToggleMap, &["/user/hand/left/input/x/click"], &[]),
+    (
+        Action::ToggleMap,
+        Suggested {
+            frame: &["/user/hand/left/input/dpad_down/click"],
+            touch: &["/user/hand/left/input/x/click"],
+            simple: &[],
+        },
+    ),
     (
         Action::ToggleObjectives,
-        &["/user/hand/left/input/y/click"],
-        &[],
+        Suggested {
+            frame: &["/user/hand/left/input/dpad_up/click"],
+            touch: &["/user/hand/left/input/y/click"],
+            simple: &[],
+        },
     ),
     (
         Action::Pause,
-        &["/user/hand/left/input/menu/click"],
-        &[
-            "/user/hand/left/input/menu/click",
-            "/user/hand/right/input/menu/click",
-        ],
+        Suggested {
+            frame: &["/user/hand/left/input/view/click"],
+            touch: &["/user/hand/left/input/menu/click"],
+            simple: &[
+                "/user/hand/left/input/menu/click",
+                "/user/hand/right/input/menu/click",
+            ],
+        },
     ),
-    (Action::Slot(1), &[], &[]),
-    (Action::Slot(2), &[], &[]),
-    (Action::Slot(3), &[], &[]),
-    (Action::Slot(4), &[], &[]),
-    (Action::Slot(5), &[], &[]),
-    (Action::Slot(6), &[], &[]),
-    (Action::Slot(7), &[], &[]),
-    (Action::Slot(8), &[], &[]),
-    (Action::Slot(9), &[], &[]),
-    (Action::QuickSave, &[], &[]),
-    (Action::QuickLoad, &[], &[]),
+    (Action::Slot(1), UNBOUND),
+    (Action::Slot(2), UNBOUND),
+    (Action::Slot(3), UNBOUND),
+    (Action::Slot(4), UNBOUND),
+    (Action::Slot(5), UNBOUND),
+    (Action::Slot(6), UNBOUND),
+    (Action::Slot(7), UNBOUND),
+    (Action::Slot(8), UNBOUND),
+    (Action::Slot(9), UNBOUND),
+    (Action::QuickSave, UNBOUND),
+    (Action::QuickLoad, UNBOUND),
 ];
+
+/// The right stick's actions, the same on the Frame's profile and Touch.
+const RIGHT_STICK_Y: &str = "/user/hand/right/input/thumbstick/y";
+const RIGHT_STICK_X: &str = "/user/hand/right/input/thumbstick/x";
+const RIGHT_STICK_CLICK: &str = "/user/hand/right/input/thumbstick/click";
+const LEFT_STICK: &str = "/user/hand/left/input/thumbstick";
 
 /// The controller actions and the set they are in.
 #[derive(Resource)]
@@ -188,6 +237,10 @@ struct ControllerActions {
     buttons: Vec<(Action, openxr::Action<bool>)>,
     /// `/user/hand/left`, to read a button from that hand alone.
     left_hand: openxr::Path,
+    /// `/user/hand/right`, to ask which profile that hand is on.
+    right_hand: openxr::Path,
+    /// [`FRAME`], to compare with the profile the right hand is on.
+    frame_profile: openxr::Path,
     /// The left stick: where to drive, as the player sees it.
     drive: openxr::Action<openxr::Vector2f>,
     /// The right stick's up and down: climb and dive.
@@ -197,7 +250,16 @@ struct ControllerActions {
     /// Aim the turret with the hand or with the head ([`AimSource`]),
     /// clicked; switch between the table and the seat ([`View`]), held.
     switch_aim: openxr::Action<bool>,
+    /// A button each for the previous and the next weapon, where the
+    /// controller has buttons to spare (the Frame's d-pad).
+    previous_weapon: openxr::Action<bool>,
+    next_weapon: openxr::Action<bool>,
 }
+
+/// Whether the right hand is on the Steam Frame's own profile, as the
+/// runtime last said; `false` until it says.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OnFrameProfile(bool);
 
 /// Binds the controllers and presses the game's actions from them.
 pub(crate) struct ControllersPlugin;
@@ -205,6 +267,7 @@ pub(crate) struct ControllersPlugin;
 impl Plugin for ControllersPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ExternalActions>()
+            .init_resource::<OnFrameProfile>()
             .init_resource::<ExternalGuide>()
             .init_resource::<ExternalDrive>()
             .add_systems(Startup, create_actions.run_if(session_available))
@@ -216,7 +279,11 @@ impl Plugin for ControllersPlugin {
                     sync_actions
                         .before(OxrActionSetSyncSet)
                         .run_if(openxr_session_running),
+                    report_profile
+                        .after(OxrActionSetSyncSet)
+                        .run_if(openxr_session_running),
                     press_actions
+                        .after(report_profile)
                         .after(OxrActionSetSyncSet)
                         .before(read_input)
                         .run_if(openxr_session_running),
@@ -252,13 +319,17 @@ fn create_actions(instance: Res<OxrInstance>, mut commands: Commands) {
             let hands = [left_hand, instance.string_to_path("/user/hand/right")?];
             let buttons = BUTTONS
                 .iter()
-                .map(|&(action, _, _)| {
+                .map(|&(action, _)| {
                     set.create_action(&action_name(action), &action.label(), &hands)
                         .map(|created| (action, created))
                 })
                 .collect::<Result<_, _>>()?;
             Ok(ControllerActions {
                 left_hand,
+                right_hand: hands[1],
+                frame_profile: instance.string_to_path(FRAME)?,
+                previous_weapon: set.create_action("previous_weapon", "Previous weapon", &[])?,
+                next_weapon: set.create_action("next_weapon", "Next weapon", &[])?,
                 drive: set.create_action("drive", "Drive", &[])?,
                 climb_dive: set.create_action("climb_dive", "Climb / dive", &[])?,
                 change_weapon: set.create_action("change_weapon", "Previous / next weapon", &[])?,
@@ -273,9 +344,11 @@ fn create_actions(instance: Res<OxrInstance>, mut commands: Commands) {
     }
 }
 
-/// Suggest the layout in the module docs.
+/// Suggest the layout in the module docs; the Frame's own profile only
+/// where the runtime enabled it.
 fn suggest_bindings(
     actions: Option<Res<ControllerActions>>,
+    frame: Res<FrameControllers>,
     mut bindings: MessageWriter<OxrSuggestActionBinding>,
 ) {
     let Some(actions) = actions else {
@@ -283,7 +356,7 @@ fn suggest_bindings(
     };
     let mut suggest =
         |action: openxr::sys::Action, profile: &'static str, paths: &[&'static str]| {
-            if !paths.is_empty() {
+            if !paths.is_empty() && (profile != FRAME || frame.0) {
                 bindings.write(OxrSuggestActionBinding {
                     action,
                     interaction_profile: profile.into(),
@@ -292,30 +365,57 @@ fn suggest_bindings(
             }
         };
 
-    for ((_, action), &(_, touch, simple)) in actions.buttons.iter().zip(BUTTONS) {
-        suggest(action.as_raw(), TOUCH, touch);
-        suggest(action.as_raw(), SIMPLE, simple);
+    for ((_, action), (_, suggested)) in actions.buttons.iter().zip(BUTTONS) {
+        suggest(action.as_raw(), FRAME, suggested.frame);
+        suggest(action.as_raw(), TOUCH, suggested.touch);
+        suggest(action.as_raw(), SIMPLE, suggested.simple);
+    }
+    for profile in [FRAME, TOUCH] {
+        suggest(actions.drive.as_raw(), profile, &[LEFT_STICK]);
+        suggest(actions.climb_dive.as_raw(), profile, &[RIGHT_STICK_Y]);
+        suggest(actions.switch_aim.as_raw(), profile, &[RIGHT_STICK_CLICK]);
+        suggest(actions.change_weapon.as_raw(), profile, &[RIGHT_STICK_X]);
     }
     suggest(
-        actions.drive.as_raw(),
-        TOUCH,
-        &["/user/hand/left/input/thumbstick"],
+        actions.previous_weapon.as_raw(),
+        FRAME,
+        &["/user/hand/left/input/dpad_left/click"],
     );
     suggest(
-        actions.climb_dive.as_raw(),
-        TOUCH,
-        &["/user/hand/right/input/thumbstick/y"],
+        actions.next_weapon.as_raw(),
+        FRAME,
+        &["/user/hand/left/input/dpad_right/click"],
     );
-    suggest(
-        actions.switch_aim.as_raw(),
-        TOUCH,
-        &["/user/hand/right/input/thumbstick/click"],
-    );
-    suggest(
-        actions.change_weapon.as_raw(),
-        TOUCH,
-        &["/user/hand/right/input/thumbstick/x"],
-    );
+}
+
+/// Note which profile the right hand is on, and say so in the log each time
+/// it changes, so a run shows which layout is in use.
+fn report_profile(
+    actions: Option<Res<ControllerActions>>,
+    session: Res<OxrSession>,
+    instance: Res<OxrInstance>,
+    mut on_frame: ResMut<OnFrameProfile>,
+    mut last: Local<Option<openxr::Path>>,
+) {
+    let Some(actions) = actions else {
+        return;
+    };
+    let Ok(profile) = session.current_interaction_profile(actions.right_hand) else {
+        return;
+    };
+    if *last == Some(profile) {
+        return;
+    }
+    *last = Some(profile);
+    on_frame.set_if_neq(OnFrameProfile(profile == actions.frame_profile));
+    let name = if profile == openxr::Path::NULL {
+        "none".to_string()
+    } else {
+        instance
+            .path_to_string(profile)
+            .unwrap_or_else(|_| "unknown".to_string())
+    };
+    info!("controllers: right hand on {name}");
 }
 
 /// Attach the set to the new session.
@@ -358,6 +458,7 @@ fn press_actions(
     mut drive_out: ResMut<ExternalDrive>,
     mut source: ResMut<AimSource>,
     mut view: ResMut<View>,
+    on_frame: Res<OnFrameProfile>,
     mut flicked: Local<bool>,
     mut stick_click: Local<StickClick>,
     mut reversing: Local<bool>,
@@ -397,9 +498,9 @@ fn press_actions(
     buttons.clear();
 
     for (action, button) in &actions.buttons {
-        // At the table the right grip holds the table, so only the left
-        // hand's binding detonates.
-        let hand = if *action == Action::Detonate && *view == View::Table {
+        // At the table the right grip holds the table, so with the Touch
+        // layout only the left hand's binding detonates.
+        let hand = if *action == Action::Detonate && *view == View::Table && !on_frame.0 {
             actions.left_hand
         } else {
             openxr::Path::NULL
@@ -446,16 +547,34 @@ fn press_actions(
         hold(buttons, action, held);
     }
 
+    // A flick of the right stick, or a press of a weapon button.
+    let mut step = None;
     if *flicked || guiding {
         // Off a missile with the stick still over, wait for it to come back.
         *flicked = change.abs() > FLICK_RESET;
     } else if change.abs() >= FLICK {
         *flicked = true;
+        step = Some(change > 0.0);
+    }
+    let pressed = |action: &openxr::Action<bool>| {
+        action
+            .state(&session, openxr::Path::NULL)
+            .is_ok_and(|state| {
+                state.is_active && state.changed_since_last_sync && state.current_state
+            })
+    };
+    if pressed(&actions.previous_weapon) {
+        step = Some(false);
+    }
+    if pressed(&actions.next_weapon) {
+        step = Some(true);
+    }
+    if let Some(upward) = step {
         let loadout = loadouts
             .iter()
             .find(|(_, controlled)| **controlled == Controlled::Local)
             .map(|(loadout, _)| loadout);
-        if let Some(slot) = loadout.and_then(|loadout| next_weapon(loadout, change > 0.0)) {
+        if let Some(slot) = loadout.and_then(|loadout| next_weapon(loadout, upward)) {
             // Let go again next frame, when the slot's own action reads up.
             buttons.press(Action::Slot(slot));
         }
@@ -780,10 +899,63 @@ mod tests {
     fn every_button_action_has_a_distinct_name() {
         let mut names: Vec<_> = BUTTONS
             .iter()
-            .map(|&(action, _, _)| action_name(action))
+            .map(|&(action, _)| action_name(action))
             .collect();
         names.sort();
         names.dedup();
         assert_eq!(names.len(), BUTTONS.len());
+    }
+
+    /// Every path suggested for the Frame's profile is one the profile has:
+    /// a single unknown path makes the runtime reject the whole profile's
+    /// bindings. The list is Valve's (Steamworks, "Steam Frame: Input").
+    #[test]
+    fn the_frame_bindings_name_only_the_frames_inputs() {
+        let shared = [
+            "system/click",
+            "bumper/click",
+            "squeeze/click",
+            "squeeze/value",
+            "trigger/click",
+            "trigger/value",
+            "thumbstick",
+            "thumbstick/x",
+            "thumbstick/y",
+            "thumbstick/click",
+            "grip/pose",
+            "aim/pose",
+        ];
+        let left = [
+            "dpad_up/click",
+            "dpad_down/click",
+            "dpad_left/click",
+            "dpad_right/click",
+            "view/click",
+        ];
+        let right = ["a/click", "b/click", "x/click", "y/click", "menu/click"];
+        let valid = |path: &str| {
+            let (hand, input) = if let Some(input) = path.strip_prefix("/user/hand/left/input/") {
+                ("left", input)
+            } else if let Some(input) = path.strip_prefix("/user/hand/right/input/") {
+                ("right", input)
+            } else {
+                return false;
+            };
+            shared.contains(&input)
+                || (hand == "left" && left.contains(&input))
+                || (hand == "right" && right.contains(&input))
+        };
+
+        let suggested = BUTTONS
+            .iter()
+            .flat_map(|(_, suggested)| suggested.frame.iter().copied())
+            .chain([LEFT_STICK, RIGHT_STICK_X, RIGHT_STICK_Y, RIGHT_STICK_CLICK])
+            .chain([
+                "/user/hand/left/input/dpad_left/click",
+                "/user/hand/left/input/dpad_right/click",
+            ]);
+        for path in suggested {
+            assert!(valid(path), "{path} is not a Steam Frame controller input");
+        }
     }
 }

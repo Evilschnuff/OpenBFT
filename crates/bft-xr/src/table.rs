@@ -52,9 +52,7 @@ use openxr::EnvironmentBlendMode;
 use crate::hands::{Grip, Side, located_grip};
 use crate::{MainCameras, View, main_camera_pose, seat_pose};
 
-/// The Oculus Touch profile, which SteamVR remaps onto the Steam Frame's
-/// controllers.
-const TOUCH: &str = "/interaction_profiles/oculus/touch_controller";
+use crate::profiles::{FRAME, FrameControllers, TOUCH};
 
 /// Where the table's centre is, in the room: metres below and ahead of
 /// where the head was at the last recentre (the seated space's origin).
@@ -177,12 +175,17 @@ fn create_actions(instance: Res<OxrInstance>, mut commands: Commands) {
 /// Both grips grab.
 fn suggest_bindings(
     actions: Option<Res<TableActions>>,
+    frame: Res<FrameControllers>,
     mut bindings: MessageWriter<OxrSuggestActionBinding>,
 ) {
-    if let Some(actions) = actions {
+    let Some(actions) = actions else {
+        return;
+    };
+    // The same squeeze in both profiles.
+    for profile in std::iter::once(TOUCH).chain(frame.0.then_some(FRAME)) {
         bindings.write(OxrSuggestActionBinding {
             action: actions.grab.as_raw(),
-            interaction_profile: TOUCH.into(),
+            interaction_profile: profile.into(),
             bindings: vec![
                 "/user/hand/left/input/squeeze/value".into(),
                 "/user/hand/right/input/squeeze/value".into(),
