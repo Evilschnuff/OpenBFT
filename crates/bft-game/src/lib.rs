@@ -45,6 +45,7 @@ pub mod states;
 pub mod ui;
 pub mod vehicle_debug;
 pub mod viewer;
+pub mod viewpoint;
 
 /// The crate's single top-level plugin: presentation, plus the sim it draws.
 ///

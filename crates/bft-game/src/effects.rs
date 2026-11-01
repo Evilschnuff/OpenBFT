@@ -18,6 +18,7 @@
 //! a [`Tracer`], a quad stretched along their velocity, beams a streak, and
 //! the nuke a full-screen white flash.
 
+use crate::viewpoint::{ExternalViewer, ViewerCameras, viewer_pose};
 use avian3d::prelude::ColliderAabb;
 use bevy::prelude::*;
 use bft_assets::axes::AxisConvention;
@@ -851,19 +852,20 @@ fn animate_billboards(
     }
 }
 
-/// Turn every billboard to face the camera.
+/// Turn every billboard to face the viewer ([`viewer_pose`]).
 ///
-/// Screen-aligned: each takes the camera's rotation, corrected for its
+/// Screen-aligned: each takes the viewer's rotation, corrected for its
 /// parent's where it hangs off a node.
 fn face_billboards(
-    camera: Query<&GlobalTransform, crate::ui::hud::sensor::MainCamera3d>,
+    external: Option<Res<ExternalViewer>>,
+    cameras: ViewerCameras,
     mut billboards: Query<(&mut Transform, Option<&ChildOf>), With<Billboard>>,
     parents: Query<&GlobalTransform>,
 ) {
-    let Some(camera) = camera.iter().next() else {
+    let Some(viewer) = viewer_pose(external.as_deref(), &cameras) else {
         return;
     };
-    let facing = camera.rotation();
+    let facing = viewer.rotation;
     for (mut transform, child_of) in &mut billboards {
         let parent = child_of
             .and_then(|c| parents.get(c.parent()).ok())
@@ -874,11 +876,12 @@ fn face_billboards(
 
 /// Stretch each tracer along its projectile's velocity.
 fn steer_tracers(
-    camera: Query<&GlobalTransform, crate::ui::hud::sensor::MainCamera3d>,
+    external: Option<Res<ExternalViewer>>,
+    cameras: ViewerCameras,
     projectiles: Query<(&Projectile, &Transform), Without<Tracer>>,
     mut tracers: Query<(&mut Transform, &mut Visibility, &ChildOf), With<Tracer>>,
 ) {
-    let eye = camera.iter().next().map(GlobalTransform::translation);
+    let eye = viewer_pose(external.as_deref(), &cameras).map(|viewer| viewer.translation);
 
     for (mut transform, mut visibility, child_of) in &mut tracers {
         let Ok((projectile, parent)) = projectiles.get(child_of.parent()) else {

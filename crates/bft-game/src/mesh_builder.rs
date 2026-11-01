@@ -218,13 +218,16 @@ impl Plugin for MeshBuilderPlugin {
     }
 }
 
-/// Turn every facade toward the active camera.
+/// Turn every facade toward the viewer: the active camera, or the
+/// [`ExternalViewer`](crate::viewpoint::ExternalViewer) when a plugin
+/// supplies one.
 ///
 /// Every Recoil facade is `CylindricalY` — a tree or a smoke sprite standing
 /// upright and spinning about y to keep its face to the viewer. The other
 /// three modes are implemented from the format's semantics; no Recoil level
 /// exercises them.
 pub fn face_the_camera(
+    external: Option<Res<crate::viewpoint::ExternalViewer>>,
     camera: Query<&GlobalTransform, (Without<Facade>, crate::ui::hud::sensor::MainCamera3d)>,
     mut facades: Query<(
         &Facade,
@@ -236,7 +239,9 @@ pub fn face_the_camera(
     // The active camera: the first enabled 3d one. A viewer with a split
     // screen would need to pick per view, which billboards cannot express in
     // a transform anyway.
-    let Some(eye) = camera.iter().next().map(|t| t.translation()) else {
+    let Some(eye) = crate::viewpoint::viewer_pose(external.as_deref(), &camera)
+        .map(|viewer| viewer.translation)
+    else {
         return;
     };
 
