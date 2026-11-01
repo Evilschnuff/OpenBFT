@@ -51,8 +51,10 @@ struct Cutaway {
     // The previous sight's azimuths (0: none) and elevations.
     previous_counts: vec4<u32>,
     // How far the view has faded from the previous sight to the current,
-    // 0–1; the previous sight's lean.
+    // 0–1; the previous sight's lean; 1 in z to draw only what is seen.
     fade: vec4<f32>,
+    // The colour the edge of a cut is tinted toward, linear.
+    rim: vec4<f32>,
 }
 
 // Written only when the sight or the explored ground changes.
@@ -69,9 +71,10 @@ struct CutawayData {
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<storage, read> cutaway: Cutaway;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<storage, read> data: CutawayData;
 
-// `cutaway::KEEP`, and the low byte of `cutaway::when_seen`.
+// `cutaway::KEEP`, the low byte of `cutaway::when_seen`, and `SPARE`.
 const KEEP: u32 = 1u;
 const WHEN_SEEN: u32 = 2u;
+const SPARE: u32 = 3u;
 
 // The constants of cutaway.rs.
 const SEEN_MARGIN: f32 = 1.5;
@@ -81,7 +84,6 @@ const SEEN_SOFT_SHARE: f32 = 0.05;
 const FACING_AWAY: f32 = -0.3;
 const FACING_TOWARD: f32 = 0.2;
 const EDGE_FADE: f32 = 0.08;
-const REACH_SLACK: f32 = 1.0;
 const LEAN_MAX_ANGLE: f32 = 0.35;
 const LEAN_UPRIGHT: f32 = 0.5;
 const LEAN_SAMPLES: u32 = 6u;
@@ -89,7 +91,12 @@ const LEAN_CLEAR: f32 = 2.0;
 const LEAN_CLEAR_SHARE: f32 = 0.1;
 // The grain the edge of what is drawn dissolves in, metres of the level.
 const GRAIN: f32 = 0.5;
-const HIDE_STEPS: u32 = 8u;
+const WALK_COLUMNS: u32 = 96u;
+const WALK_LEAD: f32 = 0.1;
+const RIM_LENGTH: f32 = 3.0;
+// How far toward the rim colour what is left of a cut's edge is tinted, at
+// most.
+const RIM_TINT: f32 = 0.85;
 const HIDE_LENGTH: f32 = 300.0;
 const HIDE_DEPTH: f32 = 30.0;
 const PI: f32 = 3.14159265;
@@ -238,7 +245,7 @@ fn seen(point: vec3<f32>, normal: vec3<f32>) -> f32 {
 fn reaches(point: vec3<f32>) -> bool {
     let offset = point - cutaway.origin.xyz;
     let distance = length(offset);
-    return distance <= cutaway.origin.w && distance <= depth_towards(CURRENT, offset) + REACH_SLACK;
+    return distance <= cutaway.origin.w && distance <= depth_towards(CURRENT, offset);
 }
 
 // `Sight::sees_body`, the current sight's.
@@ -300,27 +307,94 @@ fn is_explored(point: vec2<f32>) -> bool {
 }
 
 // `OpenColumns::is_open`.
-fn is_open_column(point: vec3<f32>) -> bool {
-    let cell = cutaway.columns.z;
-    if cell <= 0.0 {
-        return false;
+// A column's open span in metres, (bottom, top); bottom over top when it
+// has none or lies outside the grid.
+fn column_span(cell: vec2<f32>) -> vec2<f32> {
+    if cell.x < 0.0 || cell.y < 0.0 || cell.x >= f32(COLUMNS) || cell.y >= f32(COLUMNS) {
+        return vec2(1.0, 0.0);
     }
-    let at = floor((point.xz - cutaway.columns.xy) / cell);
-    if at.x < 0.0 || at.y < 0.0 || at.x >= f32(COLUMNS) || at.y >= f32(COLUMNS) {
-        return false;
-    }
-    let span = data.spans[u32(at.y) * COLUMNS + u32(at.x)];
+    let span = data.spans[u32(cell.y) * COLUMNS + u32(cell.x)];
     let bottom = f32(bitcast<i32>(span << 16u) >> 16u);
     let top = f32(bitcast<i32>(span) >> 16u);
-    let height = point.y / HEIGHT_UNIT;
-    return bottom <= height && height <= top;
+    return vec2(bottom, top) * HEIGHT_UNIT;
 }
 
-// `Cutaway::hides_sight`.
-fn hides_sight(point: vec3<f32>) -> bool {
+// How far along a line through `at` (in columns) the next boundary across
+// one axis lies, metres of the line.
+fn next_boundary(at: f32, cell: f32, along: f32) -> f32 {
+    if abs(along) <= 1e-6 {
+        return 1e30;
+    }
+    let next = select(cell, cell + 1.0, along > 0.0);
+    return (next - at) * cutaway.columns.z / along;
+}
+
+// `OpenColumns::walk` with `Sight::reaches` as what it accepts: how far
+// of the line runs through open space the sight sees, up to `enough`.
+fn walk_open_length(start: vec3<f32>, direction: vec3<f32>, length: f32, enough: f32) -> f32 {
+    var open = 0.0;
+    let size = cutaway.columns.z;
+    if size <= 0.0 || length <= WALK_LEAD {
+        return open;
+    }
+    let at = (start.xz - cutaway.columns.xy) / size;
+    var cell = floor(at);
+    let across = direction.xz;
+    let step = sign(across);
+    var next = vec2(next_boundary(at.x, cell.x, across.x), next_boundary(at.y, cell.y, across.y));
+    let delta = vec2(
+        select(size / abs(across.x), 1e30, abs(across.x) <= 1e-6),
+        select(size / abs(across.y), 1e30, abs(across.y) <= 1e-6),
+    );
+    var enter = WALK_LEAD;
+    for (var index = 0u; index < WALK_COLUMNS; index++) {
+        let leave = min(min(next.x, next.y), length);
+        if leave > enter {
+            let span = column_span(cell);
+            var low = 1.0;
+            var high = 0.0;
+            if abs(direction.y) <= 1e-6 {
+                if span.x <= start.y && start.y <= span.y {
+                    low = enter;
+                    high = leave;
+                }
+            } else if span.x <= span.y {
+                let to_bottom = (span.x - start.y) / direction.y;
+                let to_top = (span.y - start.y) / direction.y;
+                low = max(min(to_bottom, to_top), enter);
+                high = min(max(to_bottom, to_top), leave);
+            }
+            if low <= high
+                && (reaches(start + direction * ((low + high) * 0.5))
+                    || reaches(start + direction * high))
+            {
+                open += high - low;
+                if open >= enough {
+                    return open;
+                }
+            }
+        }
+        if leave >= length {
+            return open;
+        }
+        enter = leave;
+        if next.x < next.y {
+            cell.x += step.x;
+            next.x += delta.x;
+        } else {
+            cell.y += step.y;
+            next.y += delta.y;
+        }
+    }
+    return open;
+}
+
+// `Cutaway::hidden_behind`: how much open space the sight sees lies behind
+// `point` along the eye's line, 0–1.
+fn hidden_behind(point: vec3<f32>) -> f32 {
     let to = point - cutaway.eye.xyz;
     if dot(to, to) <= 1e-12 {
-        return false;
+        return 0.0;
     }
     let away = normalize(to);
     let floor_height = cutaway.origin.y - HIDE_DEPTH;
@@ -329,24 +403,19 @@ fn hides_sight(point: vec3<f32>) -> bool {
         span = min((point.y - floor_height) / -away.y, HIDE_LENGTH);
     }
     if span <= 0.0 {
-        return false;
+        return 0.0;
     }
-    for (var index = 1u; index <= HIDE_STEPS; index++) {
-        let along = f32(index) / f32(HIDE_STEPS);
-        let behind = point + away * (span * along * along);
-        // The column first, a single read; the sight's own depths only for
-        // a point it says is open.
-        if is_open_column(behind) && reaches(behind) {
-            return true;
-        }
-    }
-    return false;
+    // Every column behind it, so a low tunnel is not stepped over; the
+    // sight's own depths confirm a point a column says is open.
+    return min(walk_open_length(point, away, span, RIM_LENGTH) / RIM_LENGTH, 1.0);
 }
 
 // `Cutaway::cuts`, for this view and mesh: x how much the fragment is seen,
-// 1 drawn as it is down to 0 drawn dark, or CUT; y how bright dark is.
-fn judge(world: vec3<f32>, normal: vec3<f32>, tag: u32, instance: u32) -> vec2<f32> {
-    let whole = vec2(1.0, 1.0);
+// 1 drawn as it is down to 0 drawn dark, or CUT; y how bright dark is; z how
+// far it lies in the edge of a cut, 0–1, to tint it by.
+fn judge(world: vec3<f32>, normal: vec3<f32>, tag: u32, instance: u32) -> vec3<f32> {
+    let whole = vec3(1.0, 1.0, 0.0);
+    let cut = vec3(CUT, 0.0, 0.0);
     if cutaway.eye.w == 0.0 || tag == KEEP {
         return whole;
     }
@@ -358,25 +427,39 @@ fn judge(world: vec3<f32>, normal: vec3<f32>, tag: u32, instance: u32) -> vec2<f
     let edge = 1.0 - smoothstep(reach * (1.0 - EDGE_FADE), reach, length(world.xz - origin.xz));
     let threshold = grain(world);
     // The edge dissolves: drawn where the grain is under how far in it is,
-    // a soft scatter rather than a line.
+    // a soft scatter rather than a line, and what is left is tinted.
     if edge <= threshold {
-        return vec2(CUT, 0.0);
+        return cut;
     }
+    var rim = 1.0 - edge;
     if cutaway.counts.x == 0u {
-        return whole;
+        return vec3(1.0, 1.0, rim);
     }
     if (tag & 0xffu) == WHEN_SEEN {
         let body = get_world_from_local(instance)[3].xyz;
         let lift = f32((tag >> 8u) & 0xffu) / 10.0;
         let margin = f32((tag >> 16u) & 0xffu) / 10.0;
-        return select(vec2(CUT, 0.0), whole, sees_body(body, lift, margin));
+        return select(cut, whole, sees_body(body, lift, margin));
     }
     let amount = seen(world, normal);
-    if amount < 0.5 && hides_sight(world) {
-        return vec2(CUT, 0.0);
+    if amount < 0.5 {
+        // How far it is to be cut, 0–1: seeing only what is seen, by how
+        // little it is seen; otherwise by how much of the sight it hides,
+        // and never something spared. Cut where the grain is under that, so
+        // the edge of a cut thins out over a band, and the rest is tinted.
+        var hide = 0.0;
+        if cutaway.fade.z != 0.0 {
+            hide = clamp(1.0 - amount * 2.0, 0.0, 1.0);
+        } else if tag != SPARE {
+            hide = hidden_behind(world);
+        }
+        if hide > threshold {
+            return cut;
+        }
+        rim = max(rim, hide);
     }
     let dark = mix(cutaway.shade.z, cutaway.shade.y, explored_amount(world.xz));
-    return vec2(amount, dark);
+    return vec3(amount, dark, rim);
 }
 
 @fragment
@@ -386,10 +469,11 @@ fn fragment(
 ) -> FragmentOutput {
     var in = vertex_output;
 
+    let tag = get_tag(in.instance_index);
     let judged = judge(
         in.world_position.xyz,
         normalize(in.world_normal) * select(-1.0, 1.0, is_front),
-        get_tag(in.instance_index),
+        tag,
         in.instance_index,
     );
     if judged.x < 0.0 {
@@ -418,6 +502,11 @@ fn fragment(
         let grey = dot(out.color.rgb, vec3(0.2126, 0.7152, 0.0722));
         let dark = mix(vec3(grey), out.color.rgb, 0.4) * judged.y;
         out.color = vec4(mix(dark, out.color.rgb, judged.x), out.color.a);
+    }
+    if judged.z > 0.0 {
+        // In the edge of a cut, or the level's rim: tinted, so what is cut
+        // away shows as cut.
+        out.color = vec4(mix(out.color.rgb, cutaway.rim.rgb, judged.z * RIM_TINT), out.color.a);
     }
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
 #endif

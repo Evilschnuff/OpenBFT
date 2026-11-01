@@ -20,10 +20,12 @@
 //!   [`eye`](Cutaway::eye) is cut: the roof over a tunnel and the wall on
 //!   the eye's side of it, the far side of a hill in front of a valley.
 //!   Which space it sees is kept as [`OpenColumns`], the heights it sees
-//!   over each patch of ground, so the shader tries a point behind a
-//!   surface with a single read, and confirms one that reads open against
-//!   the sight's own depths ([`Sight::reaches`]): a column also holds the
-//!   air beside a crate, but the sight stops at the crate;
+//!   over each patch of ground, and the eye's line behind a surface is
+//!   walked across every column it crosses ([`OpenColumns::walk`]), so a
+//!   low tunnel deep under the ground is not stepped over. A point a
+//!   column says is open is confirmed against the sight's own depths
+//!   ([`Sight::reaches`]): a column also holds the air beside a crate, but
+//!   the sight stops at the crate;
 //! - any other surface is drawn darkened and greyed: on ground seen before
 //!   to [`explored_shade`](Cutaway::explored_shade), elsewhere to the darker
 //!   [`unseen_shade`](Cutaway::unseen_shade), so the side of a crate the
@@ -32,6 +34,17 @@
 //!   [`reach`](Sight::reach) is not drawn, its edge dissolved in a fine
 //!   grain fixed to the world (in the shader; [`Cutaway::cuts`] takes it
 //!   halfway) rather than a hard line.
+//!
+//! A cut does not stop at a line. Toward its edge the eye's line behind a
+//! surface passes less and less of the space the viewpoint sees
+//! ([`Cutaway::hidden_behind`]), and the surface thins out over that band,
+//! dissolved in the same world-fixed grain as the level's rim, what is left
+//! of it tinted toward [`rim_colour`](Cutaway::rim_colour): the edge of
+//! every cut, and of the level, shows as cut rather than as ragged pixels.
+//!
+//! With [`only_seen`](Cutaway::only_seen) the rule is simpler: only what the
+//! viewpoint sees is drawn, and everything else is cut, the ground seen
+//! before too.
 //!
 //! A mesh tagged [`KEEP`] (Bevy's `MeshTag`) is always drawn as it is (the
 //! viewpoint's own vehicle). One tagged [`when_seen`] is drawn as it is
@@ -66,6 +79,12 @@ pub const KEEP: u32 = 1;
 
 /// The low byte of a [`when_seen`] tag.
 pub const WHEN_SEEN: u32 = 2;
+
+/// The `MeshTag` of a mesh judged like the level but never cut for hiding
+/// what the viewpoint sees: something small, a post or a crate, that a
+/// viewer would lean to look past rather than want taken away. Where the
+/// viewpoint does not see it, it is darkened.
+pub const SPARE: u32 = 3;
 
 /// The `MeshTag` of a mesh drawn only while the sight sees the point `lift`
 /// metres over its origin, at most `margin` metres past the first surface
@@ -144,13 +163,18 @@ const EDGE_FADE: f32 = 0.08;
 /// surface itself.
 const OPEN_MARGIN: f32 = 0.3;
 
-/// How far past the sight's depth a point found open in its column still
-/// counts as seen space, metres: a little into the wall it met, so a
-/// tunnel is cut out to its walls, not as far as the inside of a crate.
-const REACH_SLACK: f32 = 1.0;
+/// The most columns a line behind a surface is walked across looking for
+/// open space ([`OpenColumns::walk`]): 240 m of ground at the usual
+/// 2.5 m column, more than a line looking down at a model crosses.
+const WALK_COLUMNS: u32 = 96;
 
-/// How many points behind a surface are tried for open space.
-const HIDE_STEPS: u32 = 8;
+/// How far behind a surface the walk starts, metres: not the surface.
+const WALK_LEAD: f32 = 0.1;
+
+/// How much open space the viewpoint sees has to lie behind a surface, along
+/// the eye's line, for it to be cut through, metres; less thins the cut out
+/// ([`Cutaway::hidden_behind`]).
+const RIM_LENGTH: f32 = 3.0;
 
 /// The side of an [`OpenColumns`] grid, in columns.
 pub const COLUMNS: u32 = 512;
@@ -168,7 +192,7 @@ const HIDE_LENGTH: f32 = 300.0;
 const HIDE_DEPTH: f32 = 30.0;
 
 /// The size of the small buffer: what changes every frame.
-const HEADER_BYTES: usize = 144;
+const HEADER_BYTES: usize = 160;
 
 /// The size of the large buffer: the sight's depths, the explored bits and
 /// the open columns.
@@ -209,6 +233,13 @@ pub struct Cutaway {
     pub explored_shade: f32,
     /// How bright what has never been seen is drawn, 0–1.
     pub unseen_shade: f32,
+    /// Whether to draw only what the viewpoint sees and cut everything
+    /// else, rather than cut only what hides it.
+    pub only_seen: bool,
+    /// The colour the edge of a cut is tinted toward, linear: the band in
+    /// which a surface thins out to nothing, and the level's rim, so that
+    /// what is cut away shows as cut.
+    pub rim_colour: LinearRgba,
 }
 
 impl Default for Cutaway {
@@ -223,6 +254,8 @@ impl Default for Cutaway {
             explored: Explored::default(),
             explored_shade: 0.5,
             unseen_shade: 0.25,
+            only_seen: false,
+            rim_colour: LinearRgba::rgb(0.6, 0.6, 0.65),
         }
     }
 }
@@ -418,12 +451,14 @@ impl Sight {
         self.seen(point, normal) >= 0.5
     }
 
-    /// Whether the viewpoint's sight reaches `point`: no further than
-    /// [`REACH_SLACK`] past the first surface in its direction.
+    /// Whether the viewpoint's sight reaches `point`: it lies short of the
+    /// first surface in its direction, in the open space the sight passes
+    /// through. Not past it: a point there is inside what the sight met, and
+    /// a cut made for it would open onto nothing.
     pub fn reaches(&self, point: Vec3) -> bool {
         let offset = point - self.origin;
         let distance = offset.length();
-        distance <= self.reach && distance <= self.depth_towards(offset) + REACH_SLACK
+        distance <= self.reach && distance <= self.depth_towards(offset)
     }
 
     /// Whether the viewpoint sees the body of something at `origin`: the
@@ -565,6 +600,111 @@ impl OpenColumns {
             bottom as f32 <= height && height <= top as f32
         })
     }
+
+    /// Walk the line from `start` along `direction` (a unit vector) for
+    /// `length` metres column by column, and add up how far of it runs
+    /// through open space: each stretch through a column's open span that
+    /// `accept` takes, tried at its middle and its far end. Stops once it
+    /// has `enough`.
+    ///
+    /// Every column the line crosses is tried, so a tunnel only a few metres
+    /// tall is not stepped over, at most [`WALK_COLUMNS`] of them.
+    pub fn walk(
+        &self,
+        start: Vec3,
+        direction: Vec3,
+        length: f32,
+        enough: f32,
+        mut accept: impl FnMut(Vec3) -> bool,
+    ) -> f32 {
+        let mut open = 0.0;
+        if self.cell <= 0.0 || self.spans.is_empty() || length <= WALK_LEAD {
+            return open;
+        }
+        let at = (start.xz() - self.corner) / self.cell;
+        let mut cell = at.floor();
+        let across = direction.xz();
+        // Per axis: which way the line steps through columns, how far along
+        // it the next boundary is, and how far between boundaries.
+        let step = Vec2::new(across.x.signum(), across.y.signum());
+        let boundary = |at: f32, cell: f32, along: f32| {
+            if along.abs() <= 1e-6 {
+                f32::INFINITY
+            } else {
+                let next = if along > 0.0 { cell + 1.0 } else { cell };
+                (next - at) * self.cell / along
+            }
+        };
+        let mut next = Vec2::new(
+            boundary(at.x, cell.x, across.x),
+            boundary(at.y, cell.y, across.y),
+        );
+        let delta = Vec2::new(
+            if across.x.abs() <= 1e-6 {
+                f32::INFINITY
+            } else {
+                self.cell / across.x.abs()
+            },
+            if across.y.abs() <= 1e-6 {
+                f32::INFINITY
+            } else {
+                self.cell / across.y.abs()
+            },
+        );
+        let mut enter = WALK_LEAD;
+        for _ in 0..WALK_COLUMNS {
+            let leave = next.x.min(next.y).min(length);
+            if leave > enter
+                && cell.x >= 0.0
+                && cell.y >= 0.0
+                && cell.x < COLUMNS as f32
+                && cell.y < COLUMNS as f32
+            {
+                let (bottom, top) =
+                    unpack_span(self.spans[(cell.y as u32 * COLUMNS + cell.x as u32) as usize]);
+                let (bottom, top) = (bottom as f32 * HEIGHT_UNIT, top as f32 * HEIGHT_UNIT);
+                // Where along the line its height is within the span; an
+                // empty column's bottom is over its top.
+                let (low, high) = if bottom > top {
+                    (1.0, 0.0)
+                } else if direction.y.abs() <= 1e-6 {
+                    if (bottom..=top).contains(&start.y) {
+                        (enter, leave)
+                    } else {
+                        (1.0, 0.0)
+                    }
+                } else {
+                    let to_bottom = (bottom - start.y) / direction.y;
+                    let to_top = (top - start.y) / direction.y;
+                    (
+                        to_bottom.min(to_top).max(enter),
+                        to_bottom.max(to_top).min(leave),
+                    )
+                };
+                if low <= high
+                    && (accept(start + direction * ((low + high) / 2.0))
+                        || accept(start + direction * high))
+                {
+                    open += high - low;
+                    if open >= enough {
+                        return open;
+                    }
+                }
+            }
+            if leave >= length {
+                return open;
+            }
+            enter = leave;
+            if next.x < next.y {
+                cell.x += step.x;
+                next.x += delta.x;
+            } else {
+                cell.y += step.y;
+                next.y += delta.y;
+            }
+        }
+        open
+    }
 }
 
 /// The ground seen so far, as a grid of cells over the level, one bit each.
@@ -684,14 +824,28 @@ impl Cutaway {
             return edge < 0.5;
         }
         // The shader dissolves the edge; this takes it at half.
-        edge < 0.5 || (self.seen(point, normal) < 0.5 && self.hides_sight(point))
+        let unseen = self.seen(point, normal) < 0.5;
+        edge < 0.5 || (unseen && (self.only_seen || self.hides_sight(point)))
     }
 
     /// Whether `point` stands in front of open space the viewpoint sees, as
-    /// the eye looks: whether open space lies behind it along the eye's line.
+    /// the eye looks: whether at least half of [`RIM_LENGTH`] of open space
+    /// lies behind it along the eye's line ([`Cutaway::hidden_behind`]).
     pub fn hides_sight(&self, point: Vec3) -> bool {
+        self.hidden_behind(point) >= 0.5
+    }
+
+    /// How much open space the viewpoint sees lies behind `point` along the
+    /// eye's line, 0–1: the length of it, over [`RIM_LENGTH`].
+    ///
+    /// Deep in front of what the viewpoint sees it is 1, and the surface is
+    /// cut. Toward the edge of a cut the line behind it passes less and less
+    /// of that space, so the cut thins out to nothing over a band rather
+    /// than stopping at a ragged line: the shader dissolves the surface in
+    /// that band and tints what is left of it ([`rim_colour`](Self::rim_colour)).
+    pub fn hidden_behind(&self, point: Vec3) -> f32 {
         let Ok(away) = Dir3::new(point - self.eye) else {
-            return false;
+            return 0.0;
         };
         let floor = self.sight.origin.y - HIDE_DEPTH;
         let length = if away.y < -0.05 {
@@ -699,16 +853,15 @@ impl Cutaway {
         } else {
             HIDE_LENGTH
         };
-        // Closer together near the surface, where a thin wall leaves only a
-        // sliver of open space behind it.
-        length > 0.0
-            && (1..=HIDE_STEPS).any(|step| {
-                let along = step as f32 / HIDE_STEPS as f32;
-                let behind = point + away * (length * along * along);
-                // The column first, a single read; the sight's own depths
-                // only for a point it says is open.
-                self.sight.columns.is_open(behind) && self.sight.reaches(behind)
-            })
+        // Every column behind it, so a low tunnel is not stepped over; the
+        // sight's own depths confirm a point a column says is open.
+        let open = self
+            .sight
+            .columns
+            .walk(point, *away, length, RIM_LENGTH, |behind| {
+                self.sight.reaches(behind)
+            });
+        (open / RIM_LENGTH).min(1.0)
     }
 
     /// The small buffer the shader reads (`cutaway.wgsl`'s `Cutaway`).
@@ -758,8 +911,14 @@ impl Cutaway {
         }
         floats(
             &mut bytes,
-            [self.fade.clamp(0.0, 1.0), before.lean, 0.0, 0.0],
+            [
+                self.fade.clamp(0.0, 1.0),
+                before.lean,
+                if self.only_seen { 1.0 } else { 0.0 },
+                0.0,
+            ],
         );
+        floats(&mut bytes, self.rim_colour.to_f32_array());
         bytes
     }
 
@@ -1088,6 +1247,47 @@ mod tests {
         assert!((cutaway.seen(behind, Vec3::Y) - (before + after) / 2.0).abs() < 1e-6);
         cutaway.fade = 1.0;
         assert!((cutaway.seen(behind, Vec3::Y) - after).abs() < 1e-6);
+    }
+
+    /// Every column a line crosses is tried: a stretch of open space far
+    /// smaller than the line, deep along it, is found.
+    #[test]
+    fn the_walk_finds_a_narrow_span_deep_along_the_line() {
+        let mut columns = OpenColumns::around(Vec3::ZERO, 400.0);
+        // A tunnel 3 m tall, 40 m down, 60 m along x.
+        columns.add_ray(Vec3::new(55.0, -39.0, 0.0), Vec3::X, 10.0);
+        columns.add_ray(Vec3::new(55.0, -41.5, 0.0), Vec3::X, 10.0);
+        let down = Vec3::new(1.5, -1.0, 0.0).normalize();
+        let mut found = None;
+        let open = columns.walk(Vec3::ZERO, down, 200.0, 100.0, |point| {
+            found = found.or(Some(point));
+            true
+        });
+        let point = found.unwrap();
+        assert!((-41.5..=-39.0).contains(&point.y), "{point}");
+        // The line crosses the tunnel's 2.5 to 3 m of height at a slant.
+        assert!(open > 2.0 && open < 8.0, "{open}");
+        // Nothing open along a line that misses it.
+        let missed = columns.walk(
+            Vec3::ZERO,
+            Vec3::new(-1.5, -1.0, 0.0).normalize(),
+            200.0,
+            100.0,
+            |_| true,
+        );
+        assert_eq!(missed, 0.0);
+    }
+
+    #[test]
+    fn seeing_only_what_is_seen_cuts_the_rest() {
+        let mut cutaway = cutaway();
+        let beyond = Vec3::new(-30.0, 0.0, 0.0);
+        cutaway.explored.mark(beyond.xz());
+        assert!(!cutaway.cuts(beyond, Vec3::Y));
+        cutaway.only_seen = true;
+        assert!(cutaway.cuts(beyond, Vec3::Y));
+        // What it sees is still drawn.
+        assert!(!cutaway.cuts(Vec3::new(1.0, 0.0, 6.0), Vec3::Y));
     }
 
     #[test]
