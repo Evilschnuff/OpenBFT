@@ -16,6 +16,16 @@
 //! only while the tank sees them. Only the eyes' views are cut, being the ones scaled up; the
 //! window keeps the whole level.
 //!
+//! Level parts no more than [`SPARE_SIZE`] across (posts, pillars, crates,
+//! sheds) are tagged [`SPARE`]: darkened where the tank does not see them
+//! but never cut, since the player leans to look past something that
+//! small. Where a cut opens onto nothing at all, the level's fog colour
+//! shows ([`table`](crate::table)), and the edge of every cut thins out
+//! toward that colour ([`RIM_SHADE`]).
+//!
+//! A press of X on the Steam Frame's own controllers ([`SeeOnly`]) switches
+//! to drawing only what the tank sees, everything else cut.
+//!
 //! The laser goes through what is not drawn and lands on what the head
 //! sees ([`aim_ray`]): its ray is moved on past every surface it meets that
 //! is cut or faces away, and if a drawn surface hides the point it reaches
@@ -25,16 +35,26 @@
 //! choices.
 
 use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
+use bevy::camera::primitives::Aabb;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
+use bevy_mod_openxr::action_binding::{OxrSendActionBindings, OxrSuggestActionBinding};
+use bevy_mod_openxr::action_set_attaching::OxrAttachActionSet;
+use bevy_mod_openxr::action_set_syncing::{OxrActionSetSyncSet, OxrSyncActionSet};
+use bevy_mod_openxr::openxr_session_running;
+use bevy_mod_openxr::resources::OxrInstance;
+use bevy_mod_openxr::session::OxrSession;
 use bevy_mod_xr::camera::XrCamera;
-use bft_game::cutaway::{Cutaway, Explored, KEEP, Sight, when_seen};
+use bevy_mod_xr::session::{XrSessionCreated, session_available};
+use bft_game::cutaway::{Cutaway, Explored, KEEP, SPARE, Sight, when_seen};
+use bft_game::mesh_builder::ModelPart;
 use bft_sim::level::{GameLayer, WorldEnv};
 use bft_sim::pickups::Pickup;
 use bft_sim::vehicle::{Controlled, Vehicle, VehicleTable};
 use bft_sim::weapons::Projectile;
 
 use crate::View;
+use crate::profiles::{FRAME, FrameControllers};
 
 /// Directions round the horizon the tank looks in.
 const AZIMUTHS: u32 = 256;
@@ -85,6 +105,15 @@ const EXPLORED_SHADE: f32 = 0.5;
 /// How bright what the tank has never seen is drawn.
 const UNSEEN_SHADE: f32 = 0.25;
 
+/// How bright the edge of a cut is tinted, as a share of the level's fog
+/// colour.
+const RIM_SHADE: f32 = 1.0;
+
+/// How far across a level part may be and still be spared cutting, metres
+/// of the level, its larger horizontal extent: a pillar, a post, a crate, a
+/// shed, but not a hill or a building's wall.
+const SPARE_SIZE: f32 = 6.0;
+
 /// How far over a vehicle's origin its middle is, metres: vehicles stand
 /// on their origins.
 pub(crate) const VEHICLE_LIFT: f32 = 1.5;
@@ -123,19 +152,161 @@ pub(crate) struct CutPlugin;
 
 impl Plugin for CutPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Sweep>().add_systems(
-            Update,
-            (
-                // After the table has moved this frame (it moves before the
-                // hand's ray is taken), before the laser is cast through it.
-                (look_round, place_cut)
-                    .chain()
-                    .after(crate::pointer::HandRaySet)
-                    .before(crate::choose_aim),
-                tag_meshes,
-            ),
+        app.init_resource::<Sweep>()
+            .init_resource::<SeeOnly>()
+            .add_systems(Startup, create_actions.run_if(session_available))
+            .add_systems(OxrSendActionBindings, suggest_bindings)
+            .add_systems(XrSessionCreated, attach_actions)
+            .add_systems(
+                PreUpdate,
+                (
+                    sync_actions
+                        .before(OxrActionSetSyncSet)
+                        .run_if(openxr_session_running),
+                    switch_mode
+                        .after(OxrActionSetSyncSet)
+                        .run_if(openxr_session_running),
+                ),
+            )
+            .add_systems(
+                Update,
+                (
+                    // After the table has moved this frame (it moves before
+                    // the hand's ray is taken), before the laser is cast
+                    // through it.
+                    (look_round, place_cut)
+                        .chain()
+                        .after(crate::pointer::HandRaySet)
+                        .before(crate::choose_aim),
+                    tag_meshes,
+                    spare_small_parts,
+                ),
+            );
+    }
+}
+
+/// Whether to draw only what the tank sees ([`Cutaway::only_seen`]).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct SeeOnly(pub(crate) bool);
+
+/// The switch between the cutaway and seeing only what the tank sees.
+#[derive(Resource)]
+struct ModeActions {
+    set: openxr::ActionSet,
+    switch: openxr::Action<bool>,
+}
+
+/// Make the action set and the switch.
+fn create_actions(instance: Res<OxrInstance>, mut commands: Commands) {
+    let created = instance
+        .create_action_set("cutaway", "Cutaway", 0)
+        .and_then(|set| {
+            Ok(ModeActions {
+                switch: set.create_action(
+                    "see_only_what_the_tank_sees",
+                    "Show only what the tank sees",
+                    &[],
+                )?,
+                set,
+            })
+        });
+    match created {
+        Ok(actions) => commands.insert_resource(actions),
+        Err(error) => warn!("cutaway: could not create the switch: {error}"),
+    }
+}
+
+/// X on the Frame's own controllers; the Touch layout has no button to
+/// spare, so there it is for the player to bind.
+fn suggest_bindings(
+    actions: Option<Res<ModeActions>>,
+    frame: Res<FrameControllers>,
+    mut bindings: MessageWriter<OxrSuggestActionBinding>,
+) {
+    if let Some(actions) = actions.filter(|_| frame.0) {
+        bindings.write(OxrSuggestActionBinding {
+            action: actions.switch.as_raw(),
+            interaction_profile: FRAME.into(),
+            bindings: vec!["/user/hand/right/input/x/click".into()],
+        });
+    }
+}
+
+/// Attach the set to the new session.
+fn attach_actions(
+    actions: Option<Res<ModeActions>>,
+    mut attach: MessageWriter<OxrAttachActionSet>,
+) {
+    if let Some(actions) = actions {
+        attach.write(OxrAttachActionSet(actions.set.clone()));
+    }
+}
+
+/// Ask the runtime for this frame's switch.
+fn sync_actions(actions: Option<Res<ModeActions>>, mut sync: MessageWriter<OxrSyncActionSet>) {
+    if let Some(actions) = actions {
+        sync.write(OxrSyncActionSet(actions.set.clone()));
+    }
+}
+
+/// Flip [`SeeOnly`] on each press, and say so.
+fn switch_mode(
+    actions: Option<Res<ModeActions>>,
+    session: Res<OxrSession>,
+    mut see_only: ResMut<SeeOnly>,
+) {
+    let pressed = actions.is_some_and(|actions| {
+        actions
+            .switch
+            .state(&session, openxr::Path::NULL)
+            .is_ok_and(|state| {
+                state.is_active && state.changed_since_last_sync && state.current_state
+            })
+    });
+    if pressed {
+        see_only.0 = !see_only.0;
+        info!(
+            "cutaway: {}",
+            if see_only.0 {
+                "showing only what the tank sees"
+            } else {
+                "cutting away what hides the tank's view"
+            }
         );
     }
+}
+
+/// Tag each level part once its bounds are known: [`SPARE`] when it is no
+/// more than [`SPARE_SIZE`] across, untagged otherwise. Vehicles', pickups'
+/// and shots' parts are retagged by [`tag_meshes`].
+#[allow(clippy::type_complexity)]
+fn spare_small_parts(
+    mut commands: Commands,
+    parts: Query<(Entity, &Aabb, &GlobalTransform), (With<ModelPart>, Without<MeshTag>)>,
+) {
+    for (entity, bounds, transform) in &parts {
+        let tag = if horizontal_size(bounds, transform) <= SPARE_SIZE {
+            SPARE
+        } else {
+            0
+        };
+        commands.entity(entity).insert(MeshTag(tag));
+    }
+}
+
+/// How far across the ground a part reaches in the world, its larger
+/// horizontal extent, from its own bounds and its transform.
+fn horizontal_size(bounds: &Aabb, transform: &GlobalTransform) -> f32 {
+    let matrix = transform.affine().matrix3;
+    let half = bounds.half_extents;
+    // The world box round a turned box: each axis takes the absolute
+    // reach of every local axis along it.
+    let world = Vec3::new(
+        matrix.row(0).abs().dot(half),
+        matrix.row(1).abs().dot(half),
+        matrix.row(2).abs().dot(half),
+    );
+    2.0 * world.x.max(world.z)
 }
 
 /// A look round in progress.
@@ -298,6 +469,8 @@ fn mark_seen_ground(sight: &Sight, explored: &mut Explored) {
 #[allow(clippy::too_many_arguments)]
 fn place_cut(
     view: Res<View>,
+    see_only: Res<SeeOnly>,
+    env: Option<Res<WorldEnv>>,
     eyes: Query<&GlobalTransform, With<XrCamera>>,
     table: Option<Res<VehicleTable>>,
     hulls: Query<(Entity, &Transform, &Vehicle, &Controlled)>,
@@ -310,10 +483,16 @@ fn place_cut(
         cutaway.enabled = enabled;
     }
     if let Some(head) = head.filter(|_| enabled) {
+        cutaway.only_seen = see_only.0;
         cutaway.min_view_scale = MIN_VIEW_SCALE;
         cutaway.explored_shade = EXPLORED_SHADE;
         cutaway.unseen_shade = UNSEEN_SHADE;
         cutaway.eye = head.translation;
+        // The edge of a cut thins out toward the level's own fog colour, a
+        // little brighter than the backdrop behind the table, so it reads
+        // as fading into it.
+        let fog = env.as_ref().map_or(Color::BLACK, |env| env.fog_color);
+        cutaway.rim_colour = (fog.to_linear() * RIM_SHADE).with_alpha(1.0);
     }
 }
 
@@ -421,5 +600,29 @@ pub(crate) fn aim_ray(
             Ray3d::new(seen - look * LEAD_IN, look)
         }
         _ => laser,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pillar a metre square and 6 m tall is small, however it is turned
+    /// or how tall; a 20 m slab of ground is not.
+    #[test]
+    fn a_pillar_is_small_and_a_slab_of_ground_is_not() {
+        let pillar = Aabb::from_min_max(Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 6.0, 0.5));
+        let turned = GlobalTransform::from(Transform::from_rotation(Quat::from_rotation_y(
+            std::f32::consts::FRAC_PI_4,
+        )));
+        let size = horizontal_size(&pillar, &turned);
+        assert!((size - std::f32::consts::SQRT_2).abs() < 1e-5, "{size}");
+        assert!(size <= SPARE_SIZE);
+
+        let slab = Aabb::from_min_max(Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 1.0, 10.0));
+        assert!(horizontal_size(&slab, &GlobalTransform::IDENTITY) > SPARE_SIZE);
+        // Scaled up, the pillar is not small either.
+        let scaled = GlobalTransform::from(Transform::from_scale(Vec3::splat(10.0)));
+        assert!(horizontal_size(&pillar, &scaled) > SPARE_SIZE);
     }
 }

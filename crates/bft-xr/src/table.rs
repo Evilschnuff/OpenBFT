@@ -22,13 +22,12 @@
 //!
 //! The sky dome is hidden while the table is up, since the level is now
 //! seen from outside it, and the eyes see no fog. Behind the level they
-//! clear to transparent black: where the runtime blends the room in behind
-//! the picture, the table stands in the room, and otherwise the backdrop is
-//! black. The room comes in either through the `ALPHA_BLEND` mode, asked
-//! for when the runtime offers it, or by the runtime's own choice: SteamVR
-//! offers only `OPAQUE` to an app streamed to a Steam Frame from a PC, but
-//! its undocumented `camera/forceSceneAlphaBlending` setting blends the
-//! camera in wherever the picture is transparent anyway.
+//! clear to the level's fog colour, darkened ([`VOID_SHADE`]): the
+//! backdrop round the table, and what shows wherever the cutaway opens
+//! onto nothing. Where the runtime blends the room in behind the picture
+//! (the `ALPHA_BLEND` mode, asked for when the runtime offers it) they
+//! clear to transparent instead, and the table stands in the room. SteamVR
+//! offers only `OPAQUE` to an app streamed to a Steam Frame from a PC.
 //!
 //! Recoil had no VR, so every number here is a presentation choice.
 
@@ -46,6 +45,7 @@ use bevy_mod_openxr::spaces::OxrSpaceLocationFlags;
 use bevy_mod_xr::camera::XrCamera;
 use bevy_mod_xr::session::{XrSessionCreated, XrTrackingRoot, session_available};
 use bft_game::level_view::SkyDome;
+use bft_sim::level::WorldEnv;
 use bft_sim::vehicle::{Controlled, Vehicle};
 use openxr::EnvironmentBlendMode;
 
@@ -59,6 +59,11 @@ use crate::profiles::{FRAME, FrameControllers, TOUCH};
 ///
 /// A presentation choice: about where a table top is for someone sitting.
 const TABLE_CENTRE: Vec3 = Vec3::new(0.0, -0.45, -0.55);
+
+/// How bright the backdrop round the table is, as a share of the level's
+/// fog colour: darker, so the level's own fogged distance stands out from
+/// it.
+const VOID_SHADE: f32 = 0.6;
 
 /// Metres of the level to a metre of the room when the table first comes
 /// up: a 1:100 model, so the tank is a few centimetres long and the table's
@@ -437,9 +442,10 @@ struct TableLook;
 
 /// While the table is up: no sky, no fog for the eyes, and the room or a
 /// plain backdrop behind the level. Put back when the seat comes back.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn look_of_view(
     view: Res<View>,
+    env: Option<Res<WorldEnv>>,
     mut commands: Commands,
     mut blend: Option<ResMut<OxrEnvironmentBlendModes>>,
     mut eyes: Query<
@@ -468,6 +474,9 @@ fn look_of_view(
             blend.set_blend_mode(wanted);
         }
     }
+    let blended = blend
+        .as_ref()
+        .is_some_and(|blend| blend.blend_mode() == EnvironmentBlendMode::ALPHA_BLEND);
 
     for (entity, mut camera, fog, taken) in &mut eyes {
         if table {
@@ -479,10 +488,16 @@ fn look_of_view(
             {
                 fog.falloff = NO_FOG;
             }
-            // Transparent whatever the blend mode: an opaque runtime shows
-            // it black, and one that blends the room in regardless (see the
-            // module docs) shows the room.
-            camera.clear_color = ClearColorConfig::Custom(Color::NONE);
+            // Where the room is blended in, transparent, so the table
+            // stands in it. Otherwise the level's fog colour, darkened: what
+            // shows round the table and wherever the cutaway opens onto
+            // nothing, the colour the level's distance already fades to.
+            camera.clear_color = ClearColorConfig::Custom(if blended {
+                Color::NONE
+            } else {
+                let fog = env.as_ref().map_or(Color::BLACK, |env| env.fog_color);
+                (fog.to_linear() * VOID_SHADE).with_alpha(1.0).into()
+            });
             if !taken {
                 commands.entity(entity).insert(TableLook);
             }
