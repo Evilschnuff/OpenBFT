@@ -38,6 +38,7 @@ use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 use bevy::camera::primitives::Aabb;
 use bevy::mesh::MeshTag;
 use bevy::prelude::*;
+use bevy::tasks::{ComputeTaskPool, ParallelSlice};
 use bevy_mod_openxr::action_binding::{OxrSendActionBindings, OxrSuggestActionBinding};
 use bevy_mod_openxr::action_set_attaching::OxrAttachActionSet;
 use bevy_mod_openxr::action_set_syncing::{OxrActionSetSyncSet, OxrSyncActionSet};
@@ -65,6 +66,11 @@ const ELEVATIONS: u32 = 32;
 /// Frames one look round is spread over: the rays are a frame's work
 /// otherwise.
 const SWEEP_FRAMES: u32 = 6;
+
+/// Rays per task when a frame's share of the sweep is cast in parallel:
+/// large enough that a task outweighs its scheduling, small enough that a
+/// frame's ~1400 rays spread over every core.
+const CAST_CHUNK: usize = 64;
 
 /// How far the tank sees where the level gives no fog, metres.
 const FALLBACK_REACH: f32 = 600.0;
@@ -395,14 +401,24 @@ fn look_round(
     let total = sight.azimuths * sight.elevations;
     let end = (sweep.next + total.div_ceil(SWEEP_FRAMES)).min(total);
     let filter = SpatialQueryFilter::from_mask(GameLayer::Level);
-    for index in sweep.next..end {
-        let (column, row) = (index % sight.azimuths, index / sight.azimuths);
-        let Ok(direction) = Dir3::new(sight.direction(column, row)) else {
-            continue;
-        };
-        let depth = spatial
-            .cast_ray(sight.origin, direction, sight.reach, true, &filter)
-            .map_or(sight.reach, |hit| hit.distance);
+    // The casts are independent, so they spread over the compute pool; only
+    // recording them into the sight is done here, in order.
+    let indices: Vec<u32> = (sweep.next..end).collect();
+    let cast = |_: usize, chunk: &[u32]| {
+        chunk
+            .iter()
+            .filter_map(|&index| {
+                let (column, row) = (index % sight.azimuths, index / sight.azimuths);
+                let direction = Dir3::new(sight.direction(column, row)).ok()?;
+                let depth = spatial
+                    .cast_ray(sight.origin, direction, sight.reach, true, &filter)
+                    .map_or(sight.reach, |hit| hit.distance);
+                Some((column, row, depth))
+            })
+            .collect::<Vec<_>>()
+    };
+    let depths = indices.par_chunk_map(ComputeTaskPool::get(), CAST_CHUNK, cast);
+    for (column, row, depth) in depths.into_iter().flatten() {
         sight.record(column, row, depth);
     }
     sweep.next = end;

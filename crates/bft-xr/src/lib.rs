@@ -18,6 +18,9 @@
 //! - [`ExternalDrive`](bft_game::input_map::ExternalDrive) adds analog
 //!   throttle and steering;
 //! - [`Cutaway`] draws the level as one viewpoint in it sees it;
+//! - [`ExternalViewer`] says where the head is, for billboards and facades;
+//! - [`ExternalSensorView`](bft_game::ui::hud::sensor::ExternalSensorView)
+//!   lets the sensor camera rest while its tile can't be seen;
 //! - [`UiCamera`] is the UI camera to retarget.
 //!
 //! With no OpenXR runtime answering, [`with_xr`] falls back to the flat
@@ -37,9 +40,15 @@
 //! in play, the free-fly camera in the viewer), taking its position and its
 //! yaw but not its pitch: the head does the pitching, and a world that tilts
 //! under a still head is the quickest way to make a player ill. The flat
-//! camera keeps drawing to the window as a spectator view, and everything
-//! that follows "the" camera (sky dome, LOD, billboards, the listener) keeps
+//! camera stops drawing to the window while the headset shows the game
+//! (nobody looks at it, and it cost a whole view), but it keeps moving, and
+//! everything that follows "the" camera (sky dome, LOD, the listener) keeps
 //! following it; the head is within a metre of it.
+//!
+//! Rendering is pipelined, the render world drawing one frame while the
+//! main world steps the next: the frame rate holds steady, the eyes are
+//! located again just before drawing, and what follows the controllers is
+//! a frame behind ([`with_xr`]; `BFT_VR_PIPELINED=0` turns it off).
 //!
 //! The turret aims along a beam from the right controller ([`pointer`]),
 //! or, switched with a click of the right stick ([`AimSource`]), where the
@@ -91,6 +100,7 @@ use bevy::window::{PresentMode, PrimaryWindow};
 use bevy_mod_openxr::add_xr_plugins;
 use bevy_mod_openxr::exts::{OxrEnabledExtensions, OxrExtensions};
 use bevy_mod_openxr::init::OxrInitPlugin;
+use bevy_mod_openxr::openxr_session_running;
 use bevy_mod_openxr::reference_space::OxrReferenceSpacePlugin;
 use bevy_mod_openxr::spaces::OxrSpaceLocationFlags;
 use bevy_mod_xr::camera::XrCamera;
@@ -131,10 +141,19 @@ const RETICLE_SIZE: f32 = 0.03;
 /// itself, and [`VrPlugin`] then stays out of the way.
 pub fn with_xr<G: PluginGroup>(defaults: G) -> PluginGroupBuilder {
     let mut defaults = defaults.build();
-    // Pipelined rendering draws one frame behind the simulation. In a
-    // headset that is a frame between turning the head and the view
-    // following, which is worth more than the throughput.
-    if defaults.contains::<PipelinedRenderingPlugin>() {
+    // Pipelined rendering draws one frame behind the simulation. The head
+    // itself does not lag (the OpenXR renderer locates the eyes again just
+    // before drawing), but everything placed from tracking in the main
+    // world does: the hand tiles, the beam, the table. In exchange the main
+    // world and the render world run side by side instead of one after the
+    // other, and the frame rate holds steady; in the headset the steady
+    // rate was worth more than the frame of hand lag. `BFT_VR_PIPELINED=0`
+    // turns it off, to compare.
+    let pipelined = std::env::var("BFT_VR_PIPELINED").map_or(true, |value| value != "0");
+    if pipelined {
+        info!("rendering: pipelined (BFT_VR_PIPELINED=0 turns it off)");
+    } else if defaults.contains::<PipelinedRenderingPlugin>() {
+        info!("rendering: not pipelined (BFT_VR_PIPELINED=0)");
         defaults = defaults.disable::<PipelinedRenderingPlugin>();
     }
     // Asked for, not required: the runtime enables what it has, and the
@@ -227,6 +246,8 @@ impl Plugin for VrPlugin {
             .add_systems(
                 Update,
                 (
+                    rest_flat_view::<false>.run_if(openxr_session_running),
+                    rest_flat_view::<true>.run_if(not(openxr_session_running)),
                     choose_aim.after(pointer::HandRaySet).before(aim_point),
                     place_reticle.after(aim_point),
                     show_ui_on_panel,
@@ -247,6 +268,19 @@ impl Plugin for VrPlugin {
                         .before(TransformSystems::Propagate),
                 ),
             );
+    }
+}
+
+/// Draw the flat window's 3D view only while the headset isn't showing the
+/// game (`DRAW` false while the session runs). Nobody looks at the window
+/// then, and it was a third full view of the level every frame. The camera
+/// keeps moving, since the seat rides on it; only its drawing stops. The
+/// window keeps its last picture.
+fn rest_flat_view<const DRAW: bool>(mut cameras: Query<&mut Camera, MainCamera3d>) {
+    for mut camera in &mut cameras {
+        if camera.is_active != DRAW {
+            camera.is_active = DRAW;
+        }
     }
 }
 
@@ -356,11 +390,14 @@ pub(crate) fn spawn_panel(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PanelMaterial>>,
 ) {
-    // One pixel until `fit_panel_to_window` sees the window.
+    // One pixel until `fit_panel_to_window` sees the window. RGBA, not BGRA:
+    // the UI camera draws here, and with the dev tools it carries egui,
+    // whose pipeline is built for `Rgba8UnormSrgb` only (bevy_egui 0.42);
+    // a BGRA target fails wgpu validation on the first inspector frame.
     let image = images.add(Image::new_target_texture(
         1,
         1,
-        TextureFormat::Bgra8UnormSrgb,
+        TextureFormat::Rgba8UnormSrgb,
         None,
     ));
     let material = materials.add(PanelMaterial::whole(image.clone()));

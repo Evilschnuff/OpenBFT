@@ -35,12 +35,15 @@
 
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
+use bevy::transform::TransformSystems;
 use bevy::ui::{ComputedNode, UiGlobalTransform};
 use bevy_mod_openxr::spaces::OxrSpaceLocationFlags;
+use bevy_mod_xr::camera::XrCamera;
 use bevy_mod_xr::session::XrTrackingRoot;
 use bft_game::ui::GameplayGate;
 use bft_game::ui::automap::AutomapLarge;
 use bft_game::ui::hud::layout::{Anchor, Column, Row};
+use bft_game::ui::hud::sensor::ExternalSensorView;
 use bft_game::ui::hud::{HudMap, HudRoot};
 
 use crate::hands::{Grip, Side, located_grip};
@@ -100,6 +103,20 @@ const HAND_MOUNTS: [(Anchor, Side); 6] = [
     (anchor(Column::Right, Row::Top), Side::Right),
 ];
 
+/// The region holding the monitor, and in it the sensor view.
+const SENSOR_ANCHOR: Anchor = anchor(Column::Left, Row::Bottom);
+
+/// How squarely the sensor's tile must face the head for its picture to be
+/// worth drawing: the cosine of the largest angle between the tile's face
+/// and the line to the head (about 75°). Seen more edge-on than that, the
+/// picture is a sliver.
+const SENSOR_FACING: f32 = 0.25;
+
+/// How near the middle of the view the sensor's tile must be: the cosine of
+/// the largest angle off the head's forward (about 60°, a little inside the
+/// headset's own field of view).
+const SENSOR_IN_VIEW: f32 = 0.5;
+
 /// An anchor, briefly.
 const fn anchor(column: Column, row: Row) -> Anchor {
     Anchor { column, row }
@@ -139,7 +156,12 @@ pub(crate) struct HudTilesPlugin;
 impl Plugin for HudTilesPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_tiles.after(spawn_panel))
-            .add_systems(Update, layout_tiles);
+            .insert_resource(ExternalSensorView(true))
+            .add_systems(Update, layout_tiles)
+            .add_systems(
+                PostUpdate,
+                report_sensor_view.after(TransformSystems::Propagate),
+            );
     }
 }
 
@@ -279,6 +301,48 @@ fn layout_tiles(
     }
 }
 
+/// Tell `bft-game` whether the sensor's picture can be seen, so its camera
+/// (a full 3D view of the level) only renders while it can
+/// ([`ExternalSensorView`]): while the monitor's tile, or the whole panel
+/// when that is up instead, is shown, near the middle of the view and
+/// turned toward the head. Decided from this frame's poses, for the next
+/// frame's sensor camera; a tile that comes into view shows one frame old
+/// at worst.
+fn report_sensor_view(
+    eyes: Query<&GlobalTransform, With<XrCamera>>,
+    panel: Res<Panel>,
+    tiles: Query<(Entity, &HudTile)>,
+    surfaces: Query<(&GlobalTransform, &InheritedVisibility)>,
+    mut view: ResMut<ExternalSensorView>,
+) {
+    let Some(head) = crate::head(&eyes) else {
+        view.set_if_neq(ExternalSensorView(true));
+        return;
+    };
+    let sensor_tile = tiles
+        .iter()
+        .find(|(_, tile)| tile.0 == SENSOR_ANCHOR)
+        .map(|(entity, _)| entity);
+    let seen = [sensor_tile, Some(panel.entity)]
+        .into_iter()
+        .flatten()
+        .filter_map(|entity| surfaces.get(entity).ok())
+        .filter(|(_, visibility)| visibility.get())
+        .any(|(surface, _)| surface_seen(&head, surface));
+    view.set_if_neq(ExternalSensorView(seen));
+}
+
+/// Whether a quad at `surface`, facing its own +Z, is in view of `head` and
+/// turned toward it.
+fn surface_seen(head: &Transform, surface: &GlobalTransform) -> bool {
+    let Ok(to_head) = Dir3::new(head.translation - surface.translation()) else {
+        return true;
+    };
+    let facing = surface.back().dot(*to_head);
+    let ahead = head.forward().dot(-*to_head);
+    facing >= SENSOR_FACING && ahead >= SENSOR_IN_VIEW
+}
+
 /// The part of an image `size` pixels large that `anchor`'s region covers:
 /// a third of its width, a half of its height.
 fn region_rect(anchor: Anchor, size: Vec2) -> Rect {
@@ -367,6 +431,8 @@ fn hand_tile_pose(grip: Transform, below: f32, size: Vec2) -> Transform {
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::{FRAC_PI_2, PI};
+
     use super::*;
 
     const SCREEN: Vec2 = Vec2::new(1200.0, 800.0);
@@ -452,6 +518,38 @@ mod tests {
                 .angle_between(turned.rotation * level.rotation)
                 < 1e-3
         );
+    }
+
+    /// The sensor draws for a tile ahead and facing the head, not for one
+    /// turned edge-on or away, nor for one off to the side or behind.
+    #[test]
+    fn the_sensor_draws_only_for_a_tile_seen_face_on() {
+        let head = Transform::default();
+        // A metre ahead (-Z), facing back at the head (+Z).
+        let ahead = GlobalTransform::from_xyz(0.0, 0.0, -1.0);
+        assert!(surface_seen(&head, &ahead));
+
+        let away = GlobalTransform::from(
+            Transform::from_xyz(0.0, 0.0, -1.0).with_rotation(Quat::from_rotation_y(PI)),
+        );
+        assert!(!surface_seen(&head, &away));
+        let edge_on = GlobalTransform::from(
+            Transform::from_xyz(0.0, 0.0, -1.0).with_rotation(Quat::from_rotation_y(FRAC_PI_2)),
+        );
+        assert!(!surface_seen(&head, &edge_on));
+
+        // Facing the head, but beside it and behind it.
+        let beside = GlobalTransform::from(
+            Transform::from_xyz(1.0, 0.0, 0.0).looking_to(Vec3::NEG_X, Vec3::Y),
+        );
+        assert!(!surface_seen(&head, &beside.mul_transform(flip())));
+        let behind = GlobalTransform::from_xyz(0.0, 0.0, 1.0).mul_transform(flip());
+        assert!(!surface_seen(&head, &behind));
+    }
+
+    /// Half a turn about up: a quad's +Z face turned the other way.
+    fn flip() -> Transform {
+        Transform::from_rotation(Quat::from_rotation_y(PI))
     }
 
     /// Every tile turns its face to the head, and keeps its anchored side
