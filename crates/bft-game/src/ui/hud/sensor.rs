@@ -49,6 +49,13 @@ pub struct SensorCamera;
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct AuxiliaryCamera;
 
+/// Whether the sensor image can be seen where a plugin outside this crate
+/// shows it: a VR hand tile turned away from the head, or out of sight,
+/// can't be. While it says no the sensor camera doesn't render, and the
+/// image keeps its last frame. Absent, the HUD's own visibility decides.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalSensorView(pub bool);
+
 /// A query filter for "the" 3D camera the player looks through: any
 /// [`Camera3d`] but the sensor's and the [`AuxiliaryCamera`]s.
 pub type MainCamera3d = (
@@ -154,8 +161,8 @@ pub fn create_sensor_image(mut commands: Commands, mut images: ResMut<Assets<Ima
 }
 
 /// Spawn, aim, size and switch the sensor camera.
-// Ten parameters: the two cameras, the HUD's state, the window, the aim and
-// the image store.
+// Eleven parameters: the two cameras, the HUD's state, the window, the aim,
+// where else the image shows and the image store.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn drive_sensor_camera(
     mut commands: Commands,
@@ -164,6 +171,7 @@ pub fn drive_sensor_camera(
     frame: Option<Res<CurrentHudFrame>>,
     window: Option<Single<&Window, With<PrimaryWindow>>>,
     external: Option<Res<ExternalAim>>,
+    external_view: Option<Res<ExternalSensorView>>,
     chase: Query<
         (&Camera, &GlobalTransform, &Projection),
         (With<ChaseCamera>, Without<SensorCamera>),
@@ -200,7 +208,8 @@ pub fn drive_sensor_camera(
         });
     }
 
-    let visible = huds.iter().any(|visibility| visibility.get());
+    let visible =
+        huds.iter().any(|visibility| visibility.get()) && external_view.is_none_or(|view| view.0);
     let Some((main_camera, eye, main_projection)) = chase.iter().next() else {
         for (entity, ..) in &sensors {
             commands.entity(entity).despawn();

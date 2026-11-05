@@ -435,7 +435,21 @@ impl TextureScroll {
 
         self.offset
     }
+
+    /// Set the offset to where a steady scroll is after `seconds`, and
+    /// return it: every part on the same clock and rate agrees.
+    pub fn at(&mut self, seconds: f64) -> Vec2 {
+        self.offset = (self.rate.as_dvec2() * seconds).fract_gl().as_vec2();
+
+        self.offset
+    }
 }
+
+/// A part whose [`TextureScroll`] shares its material with others scrolling
+/// the same way, and so takes its offset from the clock
+/// ([`TextureScroll::at`]) rather than adding up its own.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ClockScroll;
 
 /// A model part that has been given its own copy of its node's material, so
 /// the node's texture animation can mutate it.
@@ -458,9 +472,10 @@ pub struct AnimatedPart {
 /// and no interp texture animation in the game played: not the water, not
 /// the lava, not the player's tracks.
 ///
-/// Each part gets a copy of the animation and its own copy of the material,
-/// so animating one node does not animate every surface sharing its
-/// material. A cycle goes only on the parts showing one of its frames: the
+/// Each part gets a copy of the animation and a copy of the material, so
+/// animating one node does not animate every surface sharing its material;
+/// parts that only scroll, steadily and alike, share one copy between them
+/// ([`ClockScroll`]). A cycle goes only on the parts showing one of its frames: the
 /// bindings match by name (`rtracks` is also a node of every enemy tank,
 /// with a different texture), and a node can mix a cycled texture with
 /// fixed ones.
@@ -470,6 +485,7 @@ pub struct AnimatedPart {
 #[allow(clippy::type_complexity)]
 fn claim_animated_parts(
     mut commands: Commands,
+    mut shared: Local<HashMap<(AssetId<ModelMaterial>, [u32; 2]), Handle<ModelMaterial>>>,
     mut materials: ResMut<Assets<ModelMaterial>>,
     nodes: Query<
         (Option<&CycledTexture>, Option<&TextureScroll>, &Children),
@@ -504,16 +520,30 @@ fn claim_animated_parts(
                 continue;
             }
 
+            // A steady scroll alone (water, lava) shares one copy with every
+            // part scrolling the same material at the same rate, and takes
+            // its offset from the clock so they all agree: each copy is
+            // prepared for the GPU again whenever it moves, which is every
+            // frame. A scroll that starts still is the player rig's, which
+            // changes its rate as the tracks run, so it keeps its own.
+            let steady = scroll.filter(|scroll| cycle.is_none() && scroll.rate != Vec2::ZERO);
+            let copy = match steady {
+                Some(scroll) => shared
+                    .entry((material.0.id(), scroll.rate.to_array().map(f32::to_bits)))
+                    .or_insert_with(|| materials.add(source))
+                    .clone(),
+                None => materials.add(source),
+            };
             let mut part = commands.entity(child);
-            part.insert((
-                AnimatedPart::default(),
-                MeshMaterial3d(materials.add(source)),
-            ));
+            part.insert((AnimatedPart::default(), MeshMaterial3d(copy)));
             if let Some(cycle) = cycle {
                 part.insert(cycle.clone());
             }
             if let Some(scroll) = scroll {
                 part.insert(*scroll);
+            }
+            if steady.is_some() {
+                part.insert(ClockScroll);
             }
         }
     }
@@ -559,20 +589,36 @@ fn advance_cycled_textures(
 }
 
 /// Advance each scrolling material's `uv_transform`.
+///
+/// Writes only an offset that moved: a write makes Bevy prepare the material
+/// for the GPU again, and a scroll standing still (the tracks at rest, rate
+/// zero) would otherwise cost that every frame.
 fn advance_texture_scroll(
     time: Res<Time>,
     mut materials: ResMut<Assets<ModelMaterial>>,
-    mut scrolling: Query<(&mut TextureScroll, &MeshMaterial3d<ModelMaterial>)>,
+    mut scrolling: Query<(
+        &mut TextureScroll,
+        &MeshMaterial3d<ModelMaterial>,
+        Has<ClockScroll>,
+    )>,
 ) {
     let delta = time.delta_secs();
 
-    for (mut scroll, material) in &mut scrolling {
-        let offset = scroll.advance(delta);
-        let Some(mut material) = materials.get_mut(&material.0) else {
-            continue;
+    for (mut scroll, material, clock) in &mut scrolling {
+        let offset = if clock {
+            scroll.at(time.elapsed_secs_f64())
+        } else {
+            scroll.advance(delta)
         };
-
-        material.base.uv_transform.translation = offset;
+        if materials
+            .get(&material.0)
+            .is_none_or(|current| current.base.uv_transform.translation == offset)
+        {
+            continue;
+        }
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.base.uv_transform.translation = offset;
+        }
     }
 }
 
@@ -788,5 +834,14 @@ mod tests {
         let mut slow = TextureScroll::new(Vec2::new(0.5, 0.0));
         assert_eq!(slow.advance(1.0), Vec2::new(0.5, 0.0));
         assert_eq!(slow.advance(1.0), Vec2::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn clock_scrolls_agree_however_late_they_start() {
+        let mut early = TextureScroll::new(Vec2::new(0.25, 0.5));
+        let mut late = TextureScroll::new(Vec2::new(0.25, 0.5));
+        early.advance(3.0);
+        assert_eq!(early.at(10.0), late.at(10.0));
+        assert_eq!(late.at(10.0), Vec2::new(0.5, 0.0));
     }
 }

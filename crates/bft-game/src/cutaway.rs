@@ -63,7 +63,12 @@
 //!
 //! Recoil drew the level whole, so this is presentation only.
 
+use std::any::TypeId;
+
 use bevy::asset::{RenderAssetUsages, embedded_asset, uuid_handle};
+use bevy::camera::primitives::Aabb;
+use bevy::camera::visibility::{VisibilitySystems, VisibleEntities, check_visibility_cpu_culling};
+use bevy::mesh::MeshTag;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
@@ -991,8 +996,61 @@ impl Plugin for CutawayPlugin {
         app.add_plugins(MaterialPlugin::<ModelMaterial>::default())
             .init_resource::<Cutaway>()
             .add_systems(Startup, make_params)
-            .add_systems(PostUpdate, write_params);
+            .add_systems(
+                PostUpdate,
+                (
+                    write_params,
+                    cull_beyond_reach
+                        .in_set(VisibilitySystems::CheckVisibility)
+                        .after(check_visibility_cpu_culling),
+                ),
+            );
     }
+}
+
+/// Take what lies wholly past the sight's reach out of the views the
+/// cutaway applies to, before anything is queued for them.
+///
+/// The shader cuts every fragment further than the reach across the ground
+/// from the sight's origin (the level's rim), but each mesh out there would
+/// still be extracted, batched and drawn for nothing; on a table showing a
+/// circle of a large level, that is most of it. A mesh is dropped only when
+/// its bounding sphere is wholly past the rim, so nothing that could show a
+/// fragment goes, and never a [`KEEP`] one. Views the cutaway leaves whole
+/// (the flat window, the sensor) keep everything.
+#[allow(clippy::type_complexity)]
+fn cull_beyond_reach(
+    cutaway: Res<Cutaway>,
+    mut views: Query<(&Camera, &GlobalTransform, &mut VisibleEntities)>,
+    meshes: Query<(&Aabb, &GlobalTransform, Option<&MeshTag>), With<MeshMaterial3d<ModelMaterial>>>,
+) {
+    if !cutaway.enabled || cutaway.sight.is_empty() {
+        return;
+    }
+    let (origin, reach) = (cutaway.sight.origin, cutaway.sight.reach);
+    for (camera, view, mut visible) in &mut views {
+        let scale = view.affine().matrix3.x_axis.length();
+        if !camera.is_active || scale < cutaway.min_view_scale {
+            continue;
+        }
+        visible.get_mut(TypeId::of::<Mesh3d>()).retain(|&entity| {
+            let Ok((aabb, transform, tag)) = meshes.get(entity) else {
+                return true;
+            };
+            if tag.is_some_and(|tag| tag.0 == KEEP) {
+                return true;
+            }
+            let centre = transform.affine().transform_point3a(aabb.center);
+            let radius = transform.radius_vec3a(aabb.half_extents);
+            !beyond_reach(origin, reach, centre.into(), radius)
+        });
+    }
+}
+
+/// Whether a sphere at `centre` lies wholly further than `reach` across the
+/// ground from `origin`, where the cutaway's rim cuts everything.
+fn beyond_reach(origin: Vec3, reach: f32, centre: Vec3, radius: f32) -> bool {
+    centre.xz().distance(origin.xz()) - radius > reach
 }
 
 /// Put the buffers at their fixed handles, so materials made before or
@@ -1048,6 +1106,24 @@ fn write_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sphere is past the rim only when none of it is within the reach
+    /// across the ground; height does not count.
+    #[test]
+    fn only_what_lies_wholly_past_the_rim_is_culled() {
+        let origin = Vec3::new(10.0, 5.0, 10.0);
+        let at = |x: f32, y: f32| Vec3::new(10.0 + x, y, 10.0);
+        assert!(!beyond_reach(origin, 100.0, at(50.0, 0.0), 1.0));
+        assert!(
+            !beyond_reach(origin, 100.0, at(104.0, 0.0), 5.0),
+            "straddles the rim"
+        );
+        assert!(beyond_reach(origin, 100.0, at(106.0, 0.0), 5.0));
+        assert!(
+            !beyond_reach(origin, 100.0, at(50.0, 400.0), 1.0),
+            "high above, but within"
+        );
+    }
 
     /// A viewpoint 2 m over flat ground at y = 0, in a tunnel 10 m wide
     /// along z (walls at x = ±5) under a ceiling at y = 6, open to 400 m
