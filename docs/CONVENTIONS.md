@@ -24,6 +24,8 @@ tools/recon/    the analysis scripts behind docs/data/
 tools/observe/  the observation tools behind docs/observations/; their
                 evidence (recordings, marks, frame grabs) lives outside
                 the repository, in $OBFT_EVIDENCE_DIR
+tools/profile/  Tracy capture and analysis of the game's frame time
+                (`profile` feature on bft-bin); output stays in target/
 ```
 
 ## Pinned dependencies (in `[workspace.dependencies]`, exact versions)

@@ -25,3 +25,7 @@ anyhow = { workspace = true }
 # VR over OpenXR: `play --vr` and `view --vr`. Off by default, so a shipped
 # build neither compiles nor links any of it.
 vr = ["dep:bft-xr"]
+# Profiling: every system, schedule and render step is a span sent to the
+# Tracy profiler (GUI, or `tools/profile/capture.sh` headless). Off by
+# default; costs a little per span when on, so never ship with it.
+profile = ["bevy/trace_tracy"]

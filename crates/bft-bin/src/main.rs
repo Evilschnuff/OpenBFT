@@ -5,6 +5,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bft_assets::axes::AxisConvention;
 use bft_assets::{AssetsPlugin, DataPaths, ExtractProgress, LevelId, extract};
@@ -31,6 +32,12 @@ struct Cli {
     /// can be disproved in the viewer in seconds rather than by a rebuild.
     #[arg(long, value_name = "X,Y,Z", global = true)]
     axes: Option<String>,
+
+    /// Print frames per second and frame time to the terminal once a
+    /// second: a readout that needs no window, for a headset run or one
+    /// over ssh.
+    #[arg(long, global = true)]
+    log_fps: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -332,6 +339,7 @@ fn main() -> ExitCode {
                     unlock_all: *unlock_all,
                     dev: *dev,
                     vr: *vr,
+                    log_fps: cli.log_fps,
                 },
                 load.as_deref().map(save_path),
             ),
@@ -365,6 +373,7 @@ fn main() -> ExitCode {
                     unlock_all: false,
                     dev: *dev,
                     vr: *vr,
+                    log_fps: cli.log_fps,
                 },
                 None,
             ),
@@ -564,6 +573,8 @@ struct ClientFlags {
     dev: bool,
     /// Look through a VR headset.
     vr: bool,
+    /// Print the frame rate to the terminal once a second.
+    log_fps: bool,
 }
 
 /// A windowed app: presentation plus the simulation behind it.
@@ -581,6 +592,7 @@ fn run_client(
         unlock_all,
         dev,
         vr,
+        log_fps,
     } = flags;
 
     if vr && !VR_BUILT {
@@ -667,6 +679,21 @@ fn run_client(
     // The dev tools: in every debug build, and in a release one when asked.
     if dev || cfg!(debug_assertions) {
         app.add_plugins(DevToolsPlugin);
+    }
+
+    if log_fps {
+        // The dev tools may have added the frame-time diagnostics already.
+        if !app.is_plugin_added::<FrameTimeDiagnosticsPlugin>() {
+            app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+        }
+        app.add_plugins(LogDiagnosticsPlugin::filtered(
+            [
+                FrameTimeDiagnosticsPlugin::FPS,
+                FrameTimeDiagnosticsPlugin::FRAME_TIME,
+            ]
+            .into_iter()
+            .collect(),
+        ));
     }
 
     app.run();
