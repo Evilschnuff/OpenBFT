@@ -12,7 +12,8 @@
 //! follows that entity and dies with it. One-shots despawn when they finish.
 //!
 //! [`bridges`] turns the sim's messages into `PlaySound`s; [`engine`] keeps a
-//! looping engine on every vehicle near enough to hear; [`music`] plays the
+//! looping engine on every vehicle near enough to hear, played through
+//! [`varispeed`] so its pitch follows speed smoothly; [`music`] plays the
 //! user's music directory.
 //!
 //! # Loudness is ours, panning is rodio's
@@ -26,6 +27,13 @@
 //! sink's volume each frame from the range, the settings, the mute flag and
 //! whether the node it hangs off is visible. That is also how muting in the
 //! settings silences sounds that are already playing.
+//!
+//! Every volume is also scaled by [`SoundTuning::mix_headroom`], below 1,
+//! so no single sound plays past full scale. rodio hands the device
+//! floats it never clamps, so a gain above 1 is clipped wherever the system
+//! converts them to fixed point, often before its own volume control. The
+//! balance between sounds is set by turning the others down instead, and the
+//! system volume makes up the level.
 //!
 //! Only `bevy_audio`: the one gap it has (no per-sound range) is closed by
 //! setting volumes ourselves, so `bevy_kira_audio` is not needed.
@@ -47,10 +55,11 @@ pub mod cues;
 pub mod engine;
 pub mod music;
 pub mod tuning;
+pub mod varispeed;
 
 pub use engine::EngineSound;
 pub use music::MusicPlayer;
-pub use tuning::SoundTuning;
+pub use tuning::{Falloff, SoundTuning};
 
 /// Where `assets/tuning/sounds.ron` lives.
 pub const SOUNDS_TUNING: &str = "tuning/sounds.ron";
@@ -71,6 +80,16 @@ impl Plugin for AudioPlugin {
                 AudioSettings::default()
             });
             app.insert_resource(settings);
+        }
+
+        // The engines' own source. Bevy plays it only when its audio plugin
+        // is there to open a device; a headless app gets the asset alone, so
+        // engines can still be spawned and inspected.
+        if app.is_plugin_added::<bevy::audio::AudioPlugin>() {
+            use bevy::audio::AddAudioSource;
+            app.add_audio_source::<varispeed::VariLoop>();
+        } else {
+            app.init_asset::<varispeed::VariLoop>();
         }
 
         app.init_asset::<SoundTuning>()
@@ -222,17 +241,20 @@ pub struct PlayingSound {
 }
 
 /// How loud a positional sound is at `distance`: 1 inside `min`, 0 beyond
-/// `max`, linear between.
-///
-/// // approximation: `sounds.zrd` gives the two distances but not the curve;
-/// linear is the reading that makes both of them mean something.
-pub fn falloff((min, max): (f32, f32), distance: f32) -> f32 {
+/// `max`, and between them as `curve` has it ([`Falloff`] says why there
+/// are two).
+pub fn falloff(curve: Falloff, (min, max): (f32, f32), distance: f32) -> f32 {
     if distance <= min {
         1.0
     } else if distance >= max {
         0.0
     } else {
-        1.0 - (distance - min) / (max - min)
+        match curve {
+            Falloff::Linear => 1.0 - (distance - min) / (max - min),
+            // A record whose first distance is zero would otherwise be
+            // silent everywhere; it fades from 1 m instead.
+            Falloff::Inverse => (min.max(1.0) / distance).min(1.0),
+        }
     }
 }
 
@@ -243,6 +265,7 @@ pub fn falloff((min, max): (f32, f32), distance: f32) -> f32 {
 pub fn sound_gain(
     sound: &PlayingSound,
     settings: &AudioSettings,
+    curve: Falloff,
     distance: Option<f32>,
     audible: bool,
 ) -> f32 {
@@ -254,7 +277,7 @@ pub fn sound_gain(
         SoundKind::Music => settings.music_gain(),
     };
     let falloff = match (sound.range, distance) {
-        (Some(range), Some(distance)) => falloff(range, distance),
+        (Some(range), Some(distance)) => falloff(curve, range, distance),
         _ => 1.0,
     };
     (sound.gain * setting * falloff).max(0.0)
@@ -333,9 +356,10 @@ pub fn resolve_sound(
 // Systems
 // ---------------------------------------------------------------------------
 
-/// The tuning handle, held so it is not dropped.
+/// The tuning handle, held so it is not dropped, and so the dev panel can
+/// put a saved file back into the asset.
 #[derive(Resource, Debug, Clone)]
-struct SoundTuningHandle(Handle<SoundTuning>);
+pub struct SoundTuningHandle(pub Handle<SoundTuning>);
 
 fn request_tuning(mut commands: Commands, server: Res<AssetServer>) {
     commands.insert_resource(SoundTuningHandle(server.load(SOUNDS_TUNING)));
@@ -411,7 +435,24 @@ fn attach_listener(
     for camera in &cameras {
         commands
             .entity(camera)
-            .insert(SpatialListener::new(tuning.listener_gap));
+            .insert(listener(tuning.listener_gap));
+    }
+}
+
+/// Ears `gap` apart across the camera, handed to rodio the other way round.
+///
+/// rodio 0.22's `Spatial` pans backwards. Its left channel gets
+/// `((left_dist − right_dist) / gap + 1) / 4 + 0.5`, which is largest when
+/// the sound is *furthest* from the left ear, so a sound on the left comes out
+/// on the right. Its other term, `1 / dist²` per ear, would favour the near
+/// ear, but the positions here are scaled so that term is 1 for every audible
+/// sound (see the module docs), and the swap is complete. So the ear Bevy
+/// calls left sits on the camera's right. If rodio fixes the formula,
+/// `a_sound_on_the_left_plays_on_the_left` fails and this goes.
+pub fn listener(gap: f32) -> SpatialListener {
+    SpatialListener {
+        left_ear_offset: Vec3::X * gap / 2.0,
+        right_ear_offset: Vec3::X * gap / -2.0,
     }
 }
 
@@ -519,6 +560,7 @@ type SoundSinks<'a> = (
 /// Set every sink's volume for this frame. See the module docs.
 pub fn apply_gains(
     settings: Res<AudioSettings>,
+    tuning: Res<SoundTuning>,
     listener: Query<&GlobalTransform, With<SpatialListener>>,
     mut sounds: Query<SoundSinks>,
     visible: Query<&InheritedVisibility>,
@@ -532,7 +574,9 @@ pub fn apply_gains(
             .and_then(|c| visible.get(c.parent()).ok())
             .is_none_or(|v| v.get());
         let distance = ear.map(|ear| ear.distance(transform.translation()));
-        let volume = Volume::Linear(sound_gain(sound, &settings, distance, audible));
+        let gain =
+            sound_gain(sound, &settings, tuning.falloff, distance, audible) * tuning.mix_headroom;
+        let volume = Volume::Linear(gain);
 
         if let Some(mut sink) = sink {
             sink.set_volume(volume);
@@ -600,11 +644,32 @@ mod tests {
 
     #[test]
     fn falloff_is_flat_inside_min_and_silent_past_max() {
-        assert_eq!(falloff((60.0, 180.0), 10.0), 1.0);
-        assert_eq!(falloff((60.0, 180.0), 60.0), 1.0);
-        assert!((falloff((60.0, 180.0), 120.0) - 0.5).abs() < 1e-6);
-        assert_eq!(falloff((60.0, 180.0), 180.0), 0.0);
-        assert_eq!(falloff((60.0, 180.0), 1000.0), 0.0);
+        for curve in [Falloff::Linear, Falloff::Inverse] {
+            assert_eq!(falloff(curve, (60.0, 180.0), 10.0), 1.0);
+            assert_eq!(falloff(curve, (60.0, 180.0), 60.0), 1.0);
+            assert_eq!(falloff(curve, (60.0, 180.0), 180.0), 0.0);
+            assert_eq!(falloff(curve, (60.0, 180.0), 1000.0), 0.0);
+        }
+        assert!((falloff(Falloff::Linear, (60.0, 180.0), 120.0) - 0.5).abs() < 1e-6);
+    }
+
+    /// Inverse halves with every doubling of distance past `min`, and so is
+    /// quieter than linear over most of the range: for `[50, 600]` up to
+    /// 550 m, where the linear fade drops below it on its way to zero.
+    #[test]
+    fn inverse_falloff_halves_with_each_doubling() {
+        let range = (50.0, 600.0);
+        assert!((falloff(Falloff::Inverse, range, 100.0) - 0.5).abs() < 1e-6);
+        assert!((falloff(Falloff::Inverse, range, 200.0) - 0.25).abs() < 1e-6);
+        assert!((falloff(Falloff::Inverse, range, 400.0) - 0.125).abs() < 1e-6);
+        for distance in [60.0, 100.0, 300.0, 500.0] {
+            assert!(
+                falloff(Falloff::Inverse, range, distance)
+                    < falloff(Falloff::Linear, range, distance)
+            );
+        }
+        // A zero first distance still fades rather than vanishing.
+        assert!((falloff(Falloff::Inverse, (0.0, 100.0), 10.0) - 0.1).abs() < 1e-6);
     }
 
     #[test]
@@ -677,6 +742,41 @@ mod tests {
         );
     }
 
+    /// Through rodio's own panning, with our listener and our position
+    /// scaling: a sound to the camera's left (−X) is louder in the left
+    /// channel, and one on the right in the right.
+    #[test]
+    fn a_sound_on_the_left_plays_on_the_left() {
+        use rodio::buffer::SamplesBuffer;
+        use rodio::source::Spatial;
+
+        let ears = listener(SoundTuning::default().listener_gap);
+        // A sound with a 200 m range, 30 m away, scaled as `resolve_sound` does.
+        let scale = 1.0 / 200.0;
+        let channels = |side: f32| {
+            let mono = SamplesBuffer::new(
+                rodio::ChannelCount::new(1).expect("one"),
+                rodio::SampleRate::new(44_100).expect("positive"),
+                vec![1.0; 4],
+            );
+            let at = |v: Vec3| (v * scale).to_array();
+            let mut out = Spatial::new(
+                mono,
+                at(Vec3::new(30.0 * side, 0.0, -5.0)),
+                at(ears.left_ear_offset),
+                at(ears.right_ear_offset),
+            );
+            let left = out.next().expect("a left sample");
+            let right = out.next().expect("a right sample");
+            (left, right)
+        };
+
+        let (left, right) = channels(-1.0);
+        assert!(left > right, "on the left: L {left}, R {right}");
+        let (left, right) = channels(1.0);
+        assert!(right > left, "on the right: L {left}, R {right}");
+    }
+
     #[test]
     fn muting_and_hiding_both_silence_a_sound() {
         let sound = PlayingSound {
@@ -687,11 +787,22 @@ mod tests {
             kind: SoundKind::Effect,
         };
         let mut settings = AudioSettings::default();
-        assert_eq!(sound_gain(&sound, &settings, Some(5.0), true), 1.0);
-        assert!((sound_gain(&sound, &settings, Some(15.0), true) - 0.5).abs() < 1e-6);
-        assert_eq!(sound_gain(&sound, &settings, Some(5.0), false), 0.0);
+        assert_eq!(
+            sound_gain(&sound, &settings, Falloff::Linear, Some(5.0), true),
+            1.0
+        );
+        assert!(
+            (sound_gain(&sound, &settings, Falloff::Linear, Some(15.0), true) - 0.5).abs() < 1e-6
+        );
+        assert_eq!(
+            sound_gain(&sound, &settings, Falloff::Linear, Some(5.0), false),
+            0.0
+        );
 
         settings.muted = true;
-        assert_eq!(sound_gain(&sound, &settings, Some(5.0), true), 0.0);
+        assert_eq!(
+            sound_gain(&sound, &settings, Falloff::Linear, Some(5.0), true),
+            0.0
+        );
     }
 }

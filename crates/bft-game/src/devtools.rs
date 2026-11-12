@@ -78,6 +78,7 @@ pub mod inspect;
 pub mod overlays;
 pub mod panels;
 pub mod sim_panels;
+pub mod sound_panel;
 pub mod vehicle_panel;
 
 pub use bevy_egui::egui;
@@ -217,6 +218,7 @@ impl Plugin for DevToolsPlugin {
                 Box::new(sim_panels::MissionPanel),
                 Box::new(vehicle_panel::VehiclePanel::default()),
                 Box::new(ai_tuning_panel::AiTuningPanel::default()),
+                Box::new(sound_panel::SoundPanel::default()),
             ]))
             .add_systems(Update, toggle_inspector)
             .add_systems(OnExit(AppState::Viewer), clear_selection)

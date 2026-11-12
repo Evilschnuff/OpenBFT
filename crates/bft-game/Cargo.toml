@@ -39,3 +39,5 @@ thiserror = { workspace = true }
 [dev-dependencies]
 # The sound-bank test builds its archive the way `unzbd` does.
 zip = { workspace = true }
+# The stereo test runs rodio's own panning against our listener.
+rodio = { workspace = true }

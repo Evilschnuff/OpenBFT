@@ -8,9 +8,12 @@
 
 use std::collections::BTreeSet;
 
+use bevy::audio::AudioSource;
 use bft_assets::reader::{ReaderData, parse_reader_data, sounds};
 use bft_assets::sounds::read_sound_archive;
 use bft_game::audio::SoundTuning;
+use bft_game::audio::engine::engine_voice;
+use bft_game::audio::varispeed::LoopSamples;
 use bft_sim::pickups::build_pickup_table;
 use bft_sim::vehicle::VehicleOverrides;
 use bft_sim::vehicle::tuning::{Difficulty, build_vehicle_table};
@@ -108,4 +111,66 @@ fn every_sound_the_bridges_name_is_in_the_bank() {
         })
         .collect();
     assert!(unresolved.is_empty(), "no WAV for {unresolved:?}");
+}
+
+/// With the shipped tuning, no engine reaches full scale: the mix headroom
+/// leaves room under every vehicle's loudest sample, the player's and every
+/// enemy's, at any speed and on every difficulty, before the settings' own
+/// volumes (which only lower it). A gain past 1 is clipped by the system.
+#[test]
+fn no_engine_plays_past_full_scale() {
+    let (Some(reader), Some(archive)) = (global_reader(), cached("sounds/soundsh.snd.zip")) else {
+        return;
+    };
+    let table = sounds::parse(&reader).expect("sounds.zrd parses");
+    let bank = read_sound_archive(&archive).expect("the archive reads");
+    let tuning = SoundTuning::default();
+
+    let mut checked = 0;
+    let mut loud = Vec::new();
+    for difficulty in [Difficulty::Easy, Difficulty::Normal, Difficulty::Hard] {
+        let vehicles = build_vehicle_table(&reader, difficulty, &VehicleOverrides::default())
+            .expect("vehicle.zrd builds");
+        for (kind, def) in &vehicles.kinds {
+            for form in def.forms() {
+                let Some(mode) = def.mode(form) else {
+                    continue;
+                };
+                let Some(name) = &mode.sounds.engine else {
+                    continue;
+                };
+                let record = table.get(name).expect("the engine has a record");
+                let wav = bank
+                    .wavs
+                    .get(&record.file)
+                    .expect("the engine is in the bank");
+                let samples = LoopSamples::decode(&AudioSource {
+                    bytes: wav.clone().into(),
+                })
+                .expect("the engine decodes");
+
+                let pitch_scale = mode.sounds.pitch_scale.unwrap_or(0.0);
+                let volume_scale = mode.sounds.volume_scale.unwrap_or(1.0);
+                // Whoever drives it: the player's boost is the larger, and a
+                // kind is checked as if either could.
+                let loudest = [true, false]
+                    .into_iter()
+                    .flat_map(|is_player| {
+                        [0.0, 1.0].map(|speed| {
+                            engine_voice(speed, pitch_scale, volume_scale, is_player, &tuning).1
+                        })
+                    })
+                    .fold(0.0, f32::max);
+                let out = samples.peak() * record.volume * loudest * tuning.mix_headroom;
+
+                checked += 1;
+                if out > 1.0 {
+                    loud.push(format!("{difficulty:?} {kind:?} {form:?} {name}: {out:.2}"));
+                }
+            }
+        }
+    }
+
+    assert!(checked > 20, "only {checked} engines");
+    assert!(loud.is_empty(), "past full scale: {loud:?}");
 }

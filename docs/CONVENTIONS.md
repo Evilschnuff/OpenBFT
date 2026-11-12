@@ -49,6 +49,7 @@ Verified on crates.io against Bevy 0.19.1; every entry is an `=` pin.
 | rand_chacha | =0.10.0 | bft-sim | the sibling on `rand_core 0.10` |
 | directories | =6.0.0 | bft-assets | current |
 | anyhow | =1.0.104 | bft-bin only | current |
+| rodio | =0.22.2, no defaults | bft-game tests only | the copy Bevy 0.19.1's audio pulls in; the stereo test runs its panning against our listener |
 
 ### `bft-sim` Bevy feature set
 

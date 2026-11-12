@@ -2082,6 +2082,7 @@ dependencies = [
  "bft-assets",
  "bft-sim",
  "rand",
+ "rodio",
  "ron",
  "serde",
  "serde_json",

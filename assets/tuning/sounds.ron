@@ -24,8 +24,14 @@
         Sub: "snd_vehsub_morph",
     },
 
-    // RANGE (full volume inside the first, silent past the second) for a 3D
-    // sound whose record has none. // approximation
+    // How a 3D sound fades between its RANGE distances (full volume inside
+    // the first, silent past the second). Linear: straight down to the
+    // second. Inverse: the first over the distance, halving with each
+    // doubling, DirectSound 3D's rule, and closer to the original by ear. The
+    // Sound tab (F1) switches it live.
+    // // approximation: the data gives the distances, not the curve
+    falloff: Inverse,
+    // RANGE for a 3D sound whose record has none. // approximation
     default_range: (50.0, 400.0),
 
     // At most this many sounds at once; extra one-shots are dropped.
@@ -35,12 +41,31 @@
 
     // Enemy engines are heard within this many metres.
     engine_range: 250.0,
-    // Engine rate at a standstill; top speed adds the mode's `pitch_scale`.
+    // Engine rate at a standstill, 1 being the WAV's own; top speed adds the
+    // mode's `pitch_scale` times `engine_pitch_range`. The dev inspector's
+    // Sound tab (F1) edits these live and saves them here.
     // // approximation
-    engine_idle_pitch: 1.0,
+    engine_idle_pitch: 0.58,
+    // Factor on every mode's `pitch_scale`: how far the rate climbs from idle
+    // to top speed. // approximation: tuned by ear
+    engine_pitch_range: 1.0,
     // Engine loudness at a standstill, as a fraction of `volume_scale`.
     // // approximation
-    engine_idle_volume: 0.6,
+    engine_idle_volume: 0.96,
+    // Gain on the player's engine, on top of the record's VOLUME and the
+    // mode's `volume_scale`: in the original the tank's motor stands out.
+    // // approximation: tuned by ear
+    player_engine_volume: 1.95,
+    // The same for every other vehicle's engine; 1 is the data's own balance.
+    // // approximation: tuned by ear
+    enemy_engine_volume: 1.0,
+
+    // Gain on everything the game plays, effects and music alike. Below 1 so
+    // the loudest sound (the player's engine) stays under full scale: the
+    // balance comes from turning the others down, and the system volume makes
+    // up the level. Ours, not the original's; only keeps the mix from
+    // clipping. The Sound tab shows the player's engine peak against it.
+    mix_headroom: 0.5,
 
     // The first of these stems the music folder has loops in the menus; the
     // rest shuffle in game. `track02` is the CD's first audio track (track
