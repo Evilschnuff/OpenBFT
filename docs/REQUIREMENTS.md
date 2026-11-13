@@ -54,7 +54,7 @@ These are inputs to the requirements, not open questions.
 | Asset extraction | mech3ax's `unzbd` CLI run as a separate process. Engine reads JSON + PNG. Direct crate dependency deferred until mech3ax's output stabilises. |
 | Licence | EUPL v1.2 (same as mech3ax). |
 | Game data in repo | Never. No textures, models, audio, levels, and no test fixtures carved out of them. |
-| v1 scope | Single-player campaign **and** multiplayer. Original menus/cutscenes and executable reverse engineering are later phases. |
+| v1 scope | Single-player campaign **and** multiplayer. Original menus and cutscenes are a later phase (§5.2). Reverse engineering the executable is out of scope in every phase (§5.3). |
 | Reference data | The retail EA 1.0 release (`docs/data/install.md`). Requirements marked *(data-dependent)* are verified in the corresponding docs/data file. |
 
 ## 5. Scope
