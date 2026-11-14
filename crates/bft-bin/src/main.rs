@@ -16,6 +16,8 @@ use bft_game::viewer::ScreenshotRun;
 use bft_sim::SimPlugin;
 use clap::{Args, Parser, Subcommand};
 
+mod setup;
+
 /// An open rebuild of Zipper Interactive's *Recoil* (1999).
 #[derive(Parser)]
 #[command(name = "open-bft", version)]
@@ -192,6 +194,26 @@ enum Command {
     },
     /// Run a headless dedicated server.
     Server,
+    /// Get an install ready to play: remember it, build `unzbd` if none is
+    /// found, and extract.
+    ///
+    /// The one step a source checkout needs before `cargo run` plays. Safe to
+    /// run again: it only does what is still missing.
+    Setup {
+        /// Where the game is: an installed copy, the disc's files (a mounted
+        /// CD or image), a disc image (.nrg, .iso, .bin/.cue), or a folder
+        /// of music tracks. Several may be given, e.g. an image for the data
+        /// and a folder of ripped tracks for the music. Without one, setup
+        /// uses the install the engine already finds, else searches.
+        sources: Vec<PathBuf>,
+        /// Use what the search finds without asking.
+        #[arg(long, short)]
+        yes: bool,
+        /// The `unshield` binary that unpacks the disc's installer cabinet.
+        /// Overrides BFT_UNSHIELD and PATH.
+        #[arg(long, value_name = "FILE")]
+        unshield: Option<PathBuf>,
+    },
     /// Extract a Recoil install into the asset cache.
     Extract {
         /// Print the commands that would run, without running them.
@@ -383,6 +405,11 @@ fn main() -> ExitCode {
             }
         },
         Command::Server => run_server(&cli.paths, axes),
+        Command::Setup {
+            sources,
+            yes,
+            unshield,
+        } => setup::run(&cli.paths, sources, *yes, unshield.as_deref()),
         Command::Extract { dry_run, force } => run_extract(&cli.paths, *dry_run, *force),
         Command::Inspect { what } => match what.target() {
             Ok(target) => run_inspect(&cli.paths, axes, &target),

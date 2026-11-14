@@ -10,23 +10,45 @@ multiplayer is not implemented.
 
 ## You need
 
-- A copy of *Recoil*, installed or copied into a directory.
-- [rustup](https://rustup.rs). It installs the pinned toolchain on the first
-  build.
-- [mech3ax](https://github.com/TerranMechworks/mech3ax)'s `unzbd`, built from
-  the commit pinned in [docs/data/install.md](docs/data/install.md).
-- On macOS, the Xcode Command Line Tools (`xcode-select --install`).
+A copy of *Recoil*: an installed copy, the disc (mounted, or copied to a
+folder), or a disc image (`.nrg`, `.iso`, or `.bin` with its `.cue`).
 
-## Running
-
-Extract the game's data once, then play:
+## Setting up
 
 ```sh
-export BFT_DATA_DIR=/path/to/recoil   # or --data-dir
-export BFT_UNZBD=/path/to/unzbd       # or --unzbd
-cargo run -- extract
+./setup.sh ~/Downloads/Recoil.nrg   # or an .iso, a disc, an install
 cargo run
 ```
+
+`setup.sh` installs what is missing, asking first: Rust through
+[rustup](https://rustup.rs), the pinned toolchain, and on Debian, Ubuntu,
+Fedora and Arch the build packages and `unshield`, which unpacks the disc's
+installer. On macOS it needs the Xcode Command Line Tools, and Homebrew for
+`unshield`. Then it builds the game and runs `open-bft setup`, which:
+
+- recognises what it is given, and without a path looks in Wine's default
+  prefix, on media the desktop mounted, and for images in the current
+  folder, your Downloads and your Desktop, asking before using what it
+  finds;
+- from the disc or an image, unpacks the installer into the project's data
+  directory, and from an `.nrg` or `.bin` image also writes the music
+  (below);
+- remembers the install in the config file, builds
+  [mech3ax](https://github.com/TerranMechworks/mech3ax)'s `unzbd` at the
+  commit pinned in [docs/data/install.md](docs/data/install.md) if none is
+  found, and extracts the game's data.
+
+Running it again only does what is still missing. `--yes` answers every
+question with yes.
+
+To do it by hand instead: install rustup; on Linux a C toolchain and the
+ALSA and udev headers (Debian and Ubuntu: `sudo apt install build-essential
+pkg-config libasound2-dev libudev-dev`); on macOS the Xcode Command Line
+Tools (`xcode-select --install`); `unshield` for the disc or an image. Then
+run `cargo run -- setup <path>`. To use your own `unzbd`, pass `--unzbd`,
+set `BFT_UNZBD`, or put it on `PATH`.
+
+## Running
 
 ```sh
 cargo run -- play m1      # start in a level, skipping the menu
@@ -55,8 +77,10 @@ faster.
 ## Music
 
 The original's music is four CD-audio tracks on the game disc, which are not
-part of the install. Rip them yourself (`.wav`, `.flac`, `.mp3` and Ogg
-Vorbis all play) and point the config at the directory:
+part of the install. `setup` writes them out from an `.nrg` or `.bin`/`.cue`
+image, which holds them; an `.iso` does not. Otherwise rip them yourself
+(`.wav`, `.flac`, `.mp3` and Ogg Vorbis all play) and hand setup the folder,
+`cargo run -- setup /path/to/recoil-music`, or set it in the config:
 
 ```ron
 // config.ron in the platform config directory

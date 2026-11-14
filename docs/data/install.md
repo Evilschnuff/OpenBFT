@@ -35,6 +35,57 @@ PDF manuals.
 
 Confidence: verified (from the installer cabinet).
 
+## The disc and its installer cabinet
+
+What `open-bft setup` reads when given the disc instead of an install.
+Measured on a Nero image (`.nrg`, footer version 2) of the retail disc.
+
+**Tracks.** Five, from the image's `DAOX` chunk: track 1 is data (ISO
+9660, 2048-byte sectors, 216,497 sectors; volume label `RECOIL`), tracks
+2–5 are CD audio (2352-byte sectors) of 3:35, 9:11, 8:47 and 7:20, the
+four music tracks above. The image stores the audio little-endian, as a
+BIN rip does: read that way, the mean step between left-channel samples is
+0.056 of the mean level over one second of track 2, against 1.21 read
+big-endian.
+
+**The data track is shorter than its file system says.** The primary
+volume descriptor gives 216,801 sectors, 304 more than the track holds.
+One file reaches past the end: `SETUP1.WAV` (the installer's sound, from
+sector 216,431 to 216,646), so it is cut short in the image. Nothing setup
+needs is affected, but a reader must report a cut file rather than fail on
+it.
+
+**Disc root.** InstallShield 5 setup (`SETUP.EXE`, `SETUP.INS`,
+`_SYS1.CAB`, `_USER1.CAB`, `LAYOUT.BIN`) and one data cabinet, `DATA1.CAB`
+(245,410,644 bytes). There is no `DATA1.HDR`: the cabinet carries its own
+header. A Joliet reader sees the name in lower case.
+
+**The cabinet.** `unshield` reads it with no options: 13 components, 13
+file groups, 220 files. Every path inside a group is already relative to
+the install root, except the sound and font groups:
+
+| File group | Goes to | Holds |
+|---|---|---|
+| Game Files | `.` | the executables, `messages.dll`, `maps/`, the global and per-mission `zbd/` archives, `docs/` |
+| Hardware Textures | `.` | `zbd/mN/rtexture2.zbd`, `rtexture4.zbd` |
+| Software Textures | `.` | `zbd/mN/texture4.zbd` and some `texture6`/`texture8` |
+| Software Textures Minimum | `.` | `zbd/mN/texture2.zbd` |
+| AVI Files | `.` | `video/*.avi` |
+| Sound Low Fidelity | `zbd/` | `soundsl.zbd` |
+| Sound Medium Fidelity | `zbd/` | `soundsm.zbd` |
+| Sound High Fidelity | `zbd/` | `soundsh.zbd` |
+| Font Files | `fonts/` | `eurosti.ttf`, `eurostib.ttf` |
+| Uninstal Files, A3D DLLs, Indeo 5 codec, Msvc DLLs | not unpacked | Windows system files, outside the install tree |
+
+Unpacking every group but the last row gives the tree under "Install
+layout". `unshield -d <dir> -g <group> x` writes a group's files under
+`<dir>/<group>`, with the spaces in the group's name replaced by
+underscores (`Game_Files`). The disc's own `VIDEO` directory is not needed: the cabinet's
+AVI Files group holds the videos.
+
+Confidence: verified (`unshield c`, `g` and `l` on the cabinet; the
+track table and ISO directory read from the image).
+
 ## mech3ax pin
 
 Repository: <https://github.com/TerranMechworks/mech3ax>.
@@ -46,6 +97,12 @@ toolchain 1.91.1 (pinned by the repo's rust-toolchain.toml)
 build   cargo build --release      # no warnings
 binary  target/release/unzbd
 ```
+
+`open-bft setup` builds the same commit with `cargo install --locked` into
+the platform data directory when no `unzbd` is found. The commit is also
+`MECH3AX_COMMIT` in `bft-assets`' `extract.rs`, and a unit test fails if
+the two differ. It builds with the workspace's 1.98.1 toolchain; mech3ax
+only emits dead-code warnings.
 
 **`unzbd rc anim` works for all 13 missions.** The README support matrix
 still shows Recoil `anim.zbd` as unsupported, but that table is stale on this

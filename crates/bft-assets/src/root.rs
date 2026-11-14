@@ -74,9 +74,10 @@ impl fmt::Display for DataRootError {
         writeln!(f)?;
         write!(
             f,
-            "Point the engine at an install with --data-dir <path>, the \
-             BFT_DATA_DIR environment variable, or the data_root key in the \
-             config file."
+            "Run `open-bft setup <path>` once (from a checkout: `cargo run -- \
+             setup <path>`) to remember an install, or point the engine at \
+             one with --data-dir <path>, the BFT_DATA_DIR environment \
+             variable, or the data_root key in the config file."
         )
     }
 }
@@ -212,15 +213,14 @@ fn version_of(path: &Path) -> DataVersion {
 /// The highest mission number the game ships (docs/data/install.md).
 pub const MAX_MISSION: u16 = 13;
 
-/// Where a Recoil install conventionally lives on this platform (FR-D1).
+/// Where a Recoil install conventionally lives on this platform (FR-D1):
+/// only places the system or Wine define, never a folder some users happen
+/// to keep games in.
 pub fn conventional_paths() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut paths = Vec::new();
 
     if cfg!(target_os = "macos") {
-        if let Some(home) = &home {
-            paths.push(home.join("Games").join("Recoil"));
-        }
         // Mounted CDs and disk images land under /Volumes with the volume
         // name, which for the retail disc is "Recoil".
         paths.push(PathBuf::from("/Volumes/Recoil"));
@@ -238,12 +238,10 @@ pub fn conventional_paths() -> Vec<PathBuf> {
                     .join("Program Files (x86)")
                     .join("Recoil"),
             );
-            paths.push(home.join("Games").join("Recoil"));
         }
     } else if cfg!(target_os = "windows") {
         paths.push(PathBuf::from(r"C:\Program Files (x86)\Recoil"));
         paths.push(PathBuf::from(r"C:\Program Files\Recoil"));
-        paths.push(PathBuf::from(r"C:\Recoil"));
     }
 
     paths

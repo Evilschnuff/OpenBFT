@@ -74,6 +74,16 @@ impl ExtractJob {
     }
 }
 
+/// A command as a copy-pasteable shell line, for telling a user what to run
+/// by hand.
+pub fn display_command(command: &Command) -> String {
+    std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(|part| quote(&part.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Quote a path for a copy-pasteable shell command line.
 fn quote(s: &str) -> String {
     if s.is_empty() || s.contains([' ', '\'', '"', '$', '\\', '(', ')', '&', ';']) {
@@ -549,7 +559,8 @@ pub fn unzbd_version(unzbd: &Path) -> Result<String, ExtractError> {
     Ok(text.trim().to_string())
 }
 
-/// Find `unzbd`: CLI, `BFT_UNZBD`, config, `PATH`.
+/// Find `unzbd`: CLI, `BFT_UNZBD`, config, `PATH`, then the copy
+/// `open-bft setup` builds ([`managed_unzbd`]).
 pub fn find_unzbd(cli: Option<&Path>, config: Option<&Path>) -> Option<PathBuf> {
     let candidates = cli
         .map(Path::to_path_buf)
@@ -563,16 +574,53 @@ pub fn find_unzbd(cli: Option<&Path>, config: Option<&Path>) -> Option<PathBuf> 
         }
     }
 
-    which_unzbd()
+    which_unzbd().or_else(|| managed_unzbd().filter(|path| path.is_file()))
 }
+
+/// The binary's file name on this platform.
+const UNZBD_NAME: &str = if cfg!(windows) { "unzbd.exe" } else { "unzbd" };
 
 /// The first `unzbd` on `PATH`.
 fn which_unzbd() -> Option<PathBuf> {
-    let name = if cfg!(windows) { "unzbd.exe" } else { "unzbd" };
-
     std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(name))
+        .map(|dir| dir.join(UNZBD_NAME))
         .find(|path| path.is_file())
+}
+
+/// The mech3ax repository `unzbd` is built from.
+pub const MECH3AX_REPO: &str = "https://github.com/TerranMechworks/mech3ax";
+
+/// The mech3ax commit the cache layout and the loaders are written against.
+///
+/// The same pin as docs/data/install.md; change both together.
+pub const MECH3AX_COMMIT: &str = "cbb838fd8b628417abe61dee6132c350a2375f33";
+
+/// Where `open-bft setup` installs the `unzbd` it builds: `cargo install`'s
+/// `--root`, under the platform data directory.
+pub fn managed_unzbd_root() -> Option<PathBuf> {
+    crate::cache::project_dirs().map(|dirs| dirs.data_dir().join("tools"))
+}
+
+/// The binary `cargo install --root` puts under [`managed_unzbd_root`].
+pub fn managed_unzbd() -> Option<PathBuf> {
+    managed_unzbd_root().map(|root| root.join("bin").join(UNZBD_NAME))
+}
+
+/// The command that builds `unzbd` at [`MECH3AX_COMMIT`] into `root`.
+///
+/// `--locked` builds against mech3ax's own lockfile, so the result does not
+/// drift as its dependencies release. Cargo builds in a temporary directory
+/// and removes it afterwards, so only the binary stays.
+pub fn unzbd_install_command(cargo: &Path, root: &Path) -> Command {
+    let mut command = Command::new(cargo);
+    command
+        .args(["install", "--locked", "--git", MECH3AX_REPO, "--rev"])
+        .arg(MECH3AX_COMMIT)
+        .arg("--root")
+        .arg(root)
+        .arg("unzbd");
+
+    command
 }
 
 /// The current time as RFC 3339 in UTC.
@@ -861,6 +909,51 @@ mod tests {
         let err = unzbd_version(Path::new("/nonexistent/unzbd")).unwrap_err();
 
         assert!(matches!(err, ExtractError::Unzbd { .. }), "{err}");
+    }
+
+    #[test]
+    fn the_install_command_builds_the_pinned_unzbd_into_the_root() {
+        let command = unzbd_install_command(Path::new("cargo"), Path::new("/data/tools"));
+
+        let args: Vec<_> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(command.get_program(), "cargo");
+        assert_eq!(
+            args,
+            [
+                "install",
+                "--locked",
+                "--git",
+                MECH3AX_REPO,
+                "--rev",
+                MECH3AX_COMMIT,
+                "--root",
+                "/data/tools",
+                "unzbd",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_pin_matches_the_install_doc() {
+        let doc = include_str!("../../../docs/data/install.md");
+
+        assert!(
+            doc.contains(&format!("commit {MECH3AX_COMMIT}")),
+            "docs/data/install.md pins a different mech3ax commit"
+        );
+    }
+
+    #[test]
+    fn the_managed_unzbd_lives_under_the_install_root() {
+        let (Some(root), Some(binary)) = (managed_unzbd_root(), managed_unzbd()) else {
+            return;
+        };
+
+        assert_eq!(binary.parent(), Some(root.join("bin").as_path()));
     }
 
     #[test]

@@ -168,9 +168,9 @@ fn start_boot(
             &mut status,
             format!(
                 "{stale} of {} archives are not in the cache, and no `unzbd` \
-                 was found to extract them.\n\nPass --unzbd <file>, set \
-                 BFT_UNZBD, put it on PATH, or run `open-bft extract` to see \
-                 the commands to run by hand.",
+                 was found to extract them.\n\nRun `open-bft setup` (from a \
+                 checkout: `cargo run -- setup`) to build it and extract, or \
+                 pass --unzbd <file>, set BFT_UNZBD, or put it on PATH.",
                 plan.jobs.len()
             ),
         );

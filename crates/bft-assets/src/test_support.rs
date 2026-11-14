@@ -167,6 +167,92 @@ pub fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
     buffer
 }
 
+/// An ISO 9660 image with `files` in its root directory, each name as the
+/// disc records it (`DATA1.CAB;1`). No game data: the bodies are the
+/// caller's.
+pub fn iso_image(files: &[(&str, &[u8])]) -> Vec<u8> {
+    fn record(name: &[u8], extent: u32, size: u32, is_dir: bool) -> Vec<u8> {
+        let mut r = vec![0u8; 33];
+        r[2..6].copy_from_slice(&extent.to_le_bytes());
+        r[6..10].copy_from_slice(&extent.to_be_bytes());
+        r[10..14].copy_from_slice(&size.to_le_bytes());
+        r[14..18].copy_from_slice(&size.to_be_bytes());
+        r[25] = if is_dir { 2 } else { 0 };
+        r[32] = name.len() as u8;
+        r.extend_from_slice(name);
+        if r.len() % 2 == 1 {
+            r.push(0);
+        }
+        r[0] = r.len() as u8;
+        r
+    }
+
+    // Sector 16 the volume descriptor, 18 the root, files from 19.
+    let mut dir = record(&[0], 18, 2048, true);
+    dir.extend(record(&[1], 18, 2048, true));
+    let mut extent = 19u32;
+    let mut bodies = Vec::new();
+    for (name, body) in files {
+        dir.extend(record(name.as_bytes(), extent, body.len() as u32, false));
+        let mut padded = body.to_vec();
+        padded.resize(body.len().div_ceil(2048).max(1) * 2048, 0);
+        extent += (padded.len() / 2048) as u32;
+        bodies.extend(padded);
+    }
+
+    let mut img = vec![0u8; 19 * 2048];
+    let pvd = 16 * 2048;
+    img[pvd] = 1;
+    img[pvd + 1..pvd + 6].copy_from_slice(b"CD001");
+    img[pvd + 40..pvd + 72].copy_from_slice(&[b' '; 32]);
+    img[pvd + 40..pvd + 46].copy_from_slice(b"RECOIL");
+    img[pvd + 128..pvd + 130].copy_from_slice(&2048u16.to_le_bytes());
+    let root = record(&[0], 18, 2048, true);
+    img[pvd + 156..pvd + 156 + root.len()].copy_from_slice(&root);
+    img[18 * 2048..18 * 2048 + dir.len()].copy_from_slice(&dir);
+    img.extend(bodies);
+    img
+}
+
+/// A Nero image written at once (`DAOX`, footer version 2): `data` as track
+/// 1 after a 150-sector pregap, then each of `audio` as a CD-audio track.
+/// The audio must be whole 2352-byte sectors.
+pub fn nrg_image(data: &[u8], audio: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = vec![0u8; 150 * 2048];
+    let mut table = Vec::new();
+    let mut add = |bytes: &mut Vec<u8>, body: &[u8], size: u16, mode: u8| {
+        let index1 = bytes.len() as u64;
+        bytes.extend_from_slice(body);
+        table.extend_from_slice(&[0u8; 12]);
+        table.extend_from_slice(&size.to_be_bytes());
+        table.push(mode);
+        table.extend_from_slice(&[0u8; 3]);
+        table.extend_from_slice(&index1.to_be_bytes());
+        table.extend_from_slice(&index1.to_be_bytes());
+        table.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    };
+
+    add(&mut bytes, data, 2048, 0);
+    for track in audio {
+        assert_eq!(track.len() % 2352, 0, "audio must be whole sectors");
+        add(&mut bytes, track, 2352, 7);
+    }
+
+    let mut daox = vec![0u8; 20];
+    daox.push(1);
+    daox.push(1 + audio.len() as u8);
+    daox.extend(table);
+
+    let offset = bytes.len() as u64;
+    bytes.extend_from_slice(b"DAOX");
+    bytes.extend_from_slice(&(daox.len() as u32).to_be_bytes());
+    bytes.extend(daox);
+    bytes.extend_from_slice(b"END!\0\0\0\0");
+    bytes.extend_from_slice(b"NER5");
+    bytes.extend_from_slice(&offset.to_be_bytes());
+    bytes
+}
+
 /// A temporary directory that deletes itself when dropped.
 ///
 /// The workspace has no `tempfile` dependency and adds no crate nothing has
