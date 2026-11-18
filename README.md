@@ -36,7 +36,10 @@ installer. On macOS it needs the Xcode Command Line Tools, and Homebrew for
 - remembers the install in the config file, builds
   [mech3ax](https://github.com/TerranMechworks/mech3ax)'s `unzbd` at the
   commit pinned in [docs/data/install.md](docs/data/install.md) if none is
-  found, and extracts the game's data.
+  found, and extracts the game's data. mech3ax has since moved off GitHub
+  and archived that repository; if the pinned commit can no longer be
+  fetched there, setup says so and you need an `unzbd` built from it some
+  other way.
 
 Running it again only does what is still missing. `--yes` answers every
 question with yes.

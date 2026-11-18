@@ -410,6 +410,25 @@ fn remember(
     Ok(())
 }
 
+/// What to do when cargo cannot build the pinned `unzbd`.
+///
+/// mech3ax's GitHub repository was archived on 2026-10-25 with its history
+/// replaced by a single commit, so the pin is no longer on any branch there
+/// and GitHub may stop serving it (docs/data/install.md, "mech3ax pin").
+/// Cargo's own error is printed above this; the hint covers that case
+/// without trying to tell it apart from a network failure.
+fn unavailable_hint() -> String {
+    format!(
+        "If cargo could not fetch the repository or commit {commit}: mech3ax has \
+         moved off GitHub, and its archived repository there may no longer \
+         serve this commit. Get an `unzbd` built from mech3ax commit {commit} \
+         another way (the archived repository's README says where the project \
+         went), then run setup again with --unzbd <file>, or set BFT_UNZBD, or \
+         put it on PATH.",
+        commit = &extract::MECH3AX_COMMIT[..12],
+    )
+}
+
 /// Build the pinned `unzbd` with cargo into the platform data directory,
 /// where [`extract::find_unzbd`] looks last.
 fn build_unzbd() -> Result<(), ExitCode> {
@@ -441,6 +460,7 @@ fn build_unzbd() -> Result<(), ExitCode> {
             eprintln!(
                 "\nopen-bft: building `unzbd` failed ({status}). The command was:\n  {by_hand}"
             );
+            eprintln!("\n{}", unavailable_hint());
             return Err(ExitCode::FAILURE);
         }
         Err(e) => {

@@ -98,6 +98,15 @@ build   cargo build --release      # no warnings
 binary  target/release/unzbd
 ```
 
+**Availability.** The GitHub repository was archived on 2026-10-25: its
+history was replaced by a single commit ("Development has moved off
+GitHub") and its tags removed, so no branch there contains the pinned
+commit any more. On 2026-11-18 GitHub still served it by its full ID, and
+`cargo install --locked --git … --rev <commit> unzbd` with an empty cargo
+home built it; GitHub does not promise to keep unreferenced commits. If
+the build fails, `open-bft setup` says so and asks for an `unzbd` built
+from this commit some other way (`--unzbd`, `BFT_UNZBD` or `PATH`).
+
 `open-bft setup` builds the same commit with `cargo install --locked` into
 the platform data directory when no `unzbd` is found. The commit is also
 `MECH3AX_COMMIT` in `bft-assets`' `extract.rs`, and a unit test fails if
