@@ -1,4 +1,4 @@
-# open-bft
+# OpenBFT
 
 An open rebuild of Zipper Interactive's *Recoil* (1999) in Rust and
 [Bevy](https://bevyengine.org), for Linux and macOS. The engine is original
